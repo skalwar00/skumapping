@@ -4,51 +4,51 @@ import gspread
 from google.oauth2.service_account import Credentials
 from thefuzz import fuzz
 import re
-import os
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Aavoni Smart Picklist PRO", layout="wide")
 
 # --- GOOGLE SHEETS CONNECTION ---
 def get_gspread_client():
-    # Secrets se credentials uthana
     try:
-        # Dictionary copy karna taaki original secrets modify na hon
+        # Secrets se credentials uthana
         creds_info = dict(st.secrets["gcp_service_account"])
         
-        # KEY FIX: Private key ke \n ko actual line breaks mein badalna
+        # KEY FIX: Kisi bhi tarah ke format issue ko handle karna
         if "private_key" in creds_info:
-            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n")
+            # Newlines aur extra spaces saaf karna
+            creds_info["private_key"] = creds_info["private_key"].replace("\\n", "\n").strip()
             
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
         creds = Credentials.from_service_account_info(creds_info, scopes=scope)
         return gspread.authorize(creds)
     except Exception as e:
-        st.error(f"Credentials Error: {e}")
+        st.error(f"❌ Connection Error: {e}")
+        st.info("Check karein ki Secrets mein [gcp_service_account] sahi se bhara hai.")
         st.stop()
 
-# --- REPLACE THIS WITH YOUR ACTUAL SHEET ID ---
-SHEET_ID = "1VZ5QLBQwH_r8kNSsUFacrS7_VSMJ556vO8C53s8Jwr0" 
+# --- CONFIGURATION ---
+# Yahan apni Google Sheet ki ID daalein
+SHEET_ID = "YOUR_GOOGLE_SHEET_ID_HERE" 
 
 try:
     gc = get_gspread_client()
     sh = gc.open_by_key(SHEET_ID)
-    worksheet = sh.get_worksheet(0) # Pehli Tab (Sheet1)
+    worksheet = sh.get_worksheet(0)
 except Exception as e:
-    st.error(f"Google Sheet Connect nahi ho rahi! Check ID and Sharing: {e}")
+    st.error(f"❌ Google Sheet Connect nahi ho rahi: {e}")
     st.stop()
 
 # --- DATA FUNCTIONS ---
-def load_data_from_gsheet():
-    data = worksheet.get_all_records()
-    df = pd.DataFrame(data)
+def load_data():
+    records = worksheet.get_all_records()
+    df = pd.DataFrame(records)
     if df.empty:
         return pd.DataFrame(columns=['Portal_SKU', 'Master_SKU'])
     return df
 
-def save_to_gsheet(portal_sku, master_sku):
-    # Google Sheet mein nayi row add karna
-    worksheet.append_row([str(portal_sku).strip(), str(master_sku).strip()])
+def save_mapping(p_sku, m_sku):
+    worksheet.append_row([str(p_sku).strip(), str(m_sku).strip()])
 
 # --- LOGIC FUNCTIONS ---
 def get_attributes(sku_text):
@@ -76,31 +76,33 @@ def smart_hybrid_matcher(new_sku, master_options):
     return "Select Manually", 0
 
 # --- APP START ---
-st.title("🚀 Aavoni Smart Picklist PRO (Google Sheets)")
+st.title("🚀 Aavoni Smart Picklist PRO (Cloud DB)")
 
-# Load latest mappings from Sheet
-if 'master_df' not in st.session_state or st.sidebar.button("🔄 Refresh Data"):
-    st.session_state.master_df = load_data_from_gsheet()
+# Load mappings into session
+if 'master_df' not in st.session_state or st.sidebar.button("🔄 Sync Sheet"):
+    st.session_state.master_df = load_data()
 
-# --- SIDEBAR: MASTER INVENTORY MANAGEMENT ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("📦 Master Inventory")
     with st.expander("Bulk Upload Master SKUs"):
-        master_file = st.file_uploader("Upload Master CSV/Excel", type=['csv', 'xlsx'])
-        if master_file and st.button("Add to Sheet"):
-            df_m = pd.read_csv(master_file) if master_file.name.endswith('.csv') else pd.read_excel(master_file)
+        m_file = st.file_uploader("Upload Master CSV/Excel", type=['csv', 'xlsx'])
+        if m_file and st.button("Import Master"):
+            df_m = pd.read_csv(m_file) if m_file.name.endswith('.csv') else pd.read_excel(m_file)
             m_col = next((c for c in df_m.columns if 'master' in c.lower() or 'sku' in c.lower()), df_m.columns[0])
             new_ms = [str(s).strip().upper() for s in df_m[m_col].dropna().unique()]
             
-            # Master SKUs ko Portal_SKU khali rakh kar save karna (as inventory)
-            for m_sku in new_ms:
-                if m_sku not in st.session_state.master_df['Master_SKU'].values:
-                    save_to_gsheet("", m_sku)
-            st.success("Master List Updated in Google Sheets!")
+            existing_ms = st.session_state.master_df['Master_SKU'].tolist()
+            count = 0
+            for m in new_ms:
+                if m not in existing_ms:
+                    save_mapping("", m)
+                    count += 1
+            st.success(f"Added {count} new Master SKUs!")
             st.rerun()
 
 # --- MAIN UI ---
-files = st.file_uploader("Upload Portal Orders (FK/Meesho/Myntra)", type="csv", accept_multiple_files=True)
+files = st.file_uploader("Upload Portal Orders (Flipkart/Meesho/Myntra)", type="csv", accept_multiple_files=True)
 
 if files:
     orders_list = []
@@ -119,9 +121,8 @@ if files:
     if orders_list:
         combined = pd.concat(orders_list, ignore_index=True)
         
-        # Database Mapping logic
-        current_db = load_data_from_gsheet()
-        # Sirf wo rows jinme Portal_SKU aur Master_SKU dono hain
+        # Fresh data check
+        current_db = load_data()
         active_map = current_db[current_db['Portal_SKU'] != ""].copy()
         mapping_dict = dict(zip(active_map['Portal_SKU'].astype(str), active_map['Master_SKU'].astype(str)))
         
@@ -133,10 +134,12 @@ if files:
         if not ready.empty:
             summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index().sort_values('Qty', ascending=False)
             st.dataframe(summary, use_container_width=True)
-            st.metric("Total Pieces", int(summary['Qty'].sum()))
-            st.download_button("📥 Download CSV", summary.to_csv(index=False).encode('utf-8'), "Aavoni_Picklist.csv")
+            
+            c1, c2 = st.columns([1, 4])
+            c1.metric("Total Pieces", int(summary['Qty'].sum()))
+            c2.download_button("📥 Download CSV", summary.to_csv(index=False).encode('utf-8'), "Aavoni_Picklist.csv")
         else:
-            st.info("Abhi tak koi item match nahi hua. Niche Review karein.")
+            st.info("No items mapped. Link them below.")
 
         st.divider()
 
@@ -144,7 +147,6 @@ if files:
         unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
         if unmapped:
             st.subheader("🔍 Review New Mappings")
-            # All available Master SKUs (including inventory)
             m_options = sorted(current_db['Master_SKU'].unique().tolist())
             
             if m_options:
@@ -156,14 +158,14 @@ if files:
                 edited = st.data_editor(pd.DataFrame(review_data), column_config={
                     "Confirm": st.column_config.CheckboxColumn(),
                     "Master SKU": st.column_config.SelectboxColumn(options=m_options)
-                }, disabled=["Portal SKU", "Match"], hide_index=True, key="gsheet_v4")
+                }, disabled=["Portal SKU", "Match"], hide_index=True, key="gsheet_v5")
                 
-                if st.button("Save Selected Mappings to Google Sheets"):
+                if st.button("Save Selected Mappings"):
                     to_save = edited[edited['Confirm'] == True]
                     if not to_save.empty:
                         for _, row in to_save.iterrows():
-                            save_to_gsheet(row['Portal SKU'], row['Master SKU'])
-                        st.success("Google Sheet Updated Permanentally!")
+                            save_mapping(row['Portal SKU'], row['Master SKU'])
+                        st.success("Google Sheets Updated!")
                         st.rerun()
             else:
-                st.error("Google Sheet mein Master SKUs ki list nahi mili. Sidebar se upload karein.")
+                st.error("Master list khali hai. Sidebar se upload karein.")
