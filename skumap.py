@@ -37,6 +37,7 @@ except Exception as e:
 # --- DATA FUNCTIONS ---
 def load_data():
     try:
+        # Fresh data fetch from Sheet
         records = worksheet.get_all_records()
         return pd.DataFrame(records) if records else pd.DataFrame(columns=['Portal_SKU', 'Master_SKU'])
     except:
@@ -59,23 +60,34 @@ def smart_hybrid_matcher(new_sku, master_options):
 # --- APP UI ---
 st.title("🚀 Aavoni Smart Picklist PRO")
 
-# Master inventory hamesha fresh load karein dropdown ke liye
+# Data Refresh
 current_db = load_data()
-all_master_options = sorted(current_db['Master_SKU'].unique().tolist())
+# Master options for dropdown (Unique)
+all_master_options = sorted([str(m).strip().upper() for m in current_db['Master_SKU'].unique() if str(m).strip() != ""])
 
 # 1. MASTER INVENTORY UPLOAD
-with st.expander("📥 Step 1: Upload Master Inventory (CSV/XLSX)"):
+with st.expander("📥 Step 1: Upload Master Inventory (Duplicate Check Active)"):
     m_file = st.file_uploader("Master SKU file upload karein", type=['csv', 'xlsx'], key="m_up")
     if m_file:
         df_m = pd.read_csv(m_file) if m_file.name.endswith('.csv') else pd.read_excel(m_file)
         m_col = next((c for c in df_m.columns if 'master' in c.lower() or 'sku' in c.lower()), df_m.columns[0])
-        if st.button("Add All Master SKUs to Sheet"):
-            new_skus = df_m[m_col].dropna().unique()
-            rows_to_add = [["", str(sku).strip().upper()] for sku in new_skus if str(sku).strip().upper() not in all_master_options]
+        
+        if st.button("Clean & Add Master SKUs"):
+            # Uploaded file ke unique SKUs
+            new_skus_from_file = set([str(sku).strip().upper() for sku in df_m[m_col].dropna().unique()])
+            
+            # Sheet mein pehle se maujood SKUs
+            existing_masters = set(all_master_options)
+            
+            # Sirf wo jo sheet mein nahi hain
+            rows_to_add = [["", sku] for sku in new_skus_from_file if sku not in existing_masters]
+            
             if rows_to_add:
                 bulk_save_to_gsheet(rows_to_add)
-                st.success(f"Added {len(rows_to_add)} SKUs!")
+                st.success(f"Naye {len(rows_to_add)} SKUs add ho gaye! Duplicates skip kar diye gaye.")
                 st.rerun()
+            else:
+                st.info("Saare SKUs pehle se hi Sheet mein hain. Kuch bhi naya add nahi kiya gaya.")
 
 st.divider()
 
@@ -101,6 +113,7 @@ if files:
 
     if orders_list:
         combined = pd.concat(orders_list, ignore_index=True)
+        # Refresh mapped data
         active_map = current_db[current_db['Portal_SKU'].astype(str).str.strip() != ""].copy()
         m_dict = dict(zip(active_map['Portal_SKU'].astype(str), active_map['Master_SKU'].astype(str)))
         
@@ -114,7 +127,7 @@ if files:
             st.dataframe(summary, use_container_width=True)
             st.download_button("📥 Download Picklist", summary.to_csv(index=False).encode('utf-8'), "Aavoni_Picklist.csv")
 
-        # REVIEW SECTION (DROPDOWN FIX HERE)
+        # REVIEW SECTION
         unmapped = [s for s in combined['Portal_SKU'].unique() if str(s) not in m_dict]
         if unmapped and all_master_options:
             st.subheader("🔍 Review & Link New SKUs")
@@ -123,30 +136,31 @@ if files:
                 sugg, score = smart_hybrid_matcher(s, all_master_options)
                 review_data.append({"Confirm": (score >= 90), "Portal SKU": s, "Master SKU": sugg, "Match": f"{score}%"})
             
-            # --- DROPDOWN CONFIGURATION ---
             edited = st.data_editor(
                 pd.DataFrame(review_data),
                 column_config={
-                    "Confirm": st.column_config.CheckboxColumn(help="Tick to save"),
-                    "Master SKU": st.column_config.SelectboxColumn(
-                        "Master SKU",
-                        help="Select the correct Master SKU from dropdown",
-                        options=all_master_options, # Yeh line dropdown layegi
-                        required=True,
-                    ),
+                    "Confirm": st.column_config.CheckboxColumn(),
+                    "Master SKU": st.column_config.SelectboxColumn("Master SKU", options=all_master_options, required=True),
                     "Portal SKU": st.column_config.TextColumn(disabled=True),
                     "Match": st.column_config.TextColumn(disabled=True)
                 },
                 hide_index=True,
-                key="editor_dropdown_v9"
+                key="editor_final_v10"
             )
             
             if st.button("Save Selected Mappings"):
                 to_save = edited[edited['Confirm'] == True]
                 if not to_save.empty:
-                    rows_to_save = [[str(r['Portal SKU']), str(r['Master SKU'])] for _, r in to_save.iterrows()]
-                    bulk_save_to_gsheet(rows_to_save)
-                    st.success("Google Sheets Updated!")
-                    st.rerun()
-        elif not all_master_options:
-            st.warning("Pehle Step 1 mein Master SKUs upload karein!")
+                    # Double check duplicates in mapping before saving
+                    existing_portal_skus = set(current_db['Portal_SKU'].astype(str).tolist())
+                    rows_to_save = []
+                    for _, r in to_save.iterrows():
+                        if str(r['Portal SKU']) not in existing_portal_skus:
+                            rows_to_save.append([str(r['Portal SKU']), str(r['Master SKU'])])
+                    
+                    if rows_to_save:
+                        bulk_save_to_gsheet(rows_to_save)
+                        st.success(f"Saved {len(rows_to_save)} new links!")
+                        st.rerun()
+                    else:
+                        st.warning("Ye mappings pehle se sheet mein hain!")
