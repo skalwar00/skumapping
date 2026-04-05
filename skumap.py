@@ -19,22 +19,18 @@ if 'master_df' not in st.session_state:
 # --- HELPER FUNCTIONS ---
 
 def clean_sku(sku_text):
-    """Spaces, Hyphens (-), and Underscores (_) ko remove karta hai matching ke liye"""
-    if pd.isna(sku_text): return ""
-    # Sirf alphanumeric characters rakhein (PANT-WHITE-7XL -> PANTWHITE7XL)
+    """Spaces, Hyphens, and Underscores ko remove karta hai matching ke liye"""
+    if pd.isna(sku_text): 
+        return ""
     cleaned = re.sub(r'[-_\s]+', '', str(sku_text).upper())
     return cleaned
 
 def hybrid_sku_matcher(new_sku, master_options):
-    """
-    1. Size/Color Hard Filter
-    2. Exact Size Match Check
-    3. Fuzzy match on cleaned strings
-    """
+    """Size/Color Hard Filter + Fuzzy match on cleaned strings"""
     new_sku_str = str(new_sku).upper()
     cleaned_new = clean_sku(new_sku)
     
-    # 1. Size Extraction (Strict list)
+    # 1. Size Extraction
     sizes = ['S', 'M', 'L', 'XL', '2XL', '3XL', '4XL', '5XL', '6XL', '7XL', '8XL']
     found_size = next((s for s in sizes if re.search(rf'\b{s}\b', new_sku_str)), None)
     
@@ -45,7 +41,6 @@ def hybrid_sku_matcher(new_sku, master_options):
     # 3. Filtering Master List
     filtered_options = master_options
     
-    # Size logic: Agar portal SKU mein 6XL hai, toh Master mein bhi 6XL hona hi chahiye
     if found_size:
         filtered_options = [m for m in filtered_options if re.search(rf'\b{found_size}\b', str(m).upper())]
     
@@ -59,7 +54,6 @@ def hybrid_sku_matcher(new_sku, master_options):
         
         for m_option in filtered_options:
             m_cleaned = clean_sku(m_option)
-            # Fuzz ratio check on cleaned strings (Ignores - , _ , space)
             score = fuzz.ratio(cleaned_new, m_cleaned)
             if score > highest_score:
                 highest_score = score
@@ -68,7 +62,7 @@ def hybrid_sku_matcher(new_sku, master_options):
         if highest_score > 85:
             return best_match, f"{highest_score}% (Strict Match)"
             
-    return "Select Manually", "0% (Size/Color Mismatch)"
+    return "Select Manually", "0% (Mismatch)"
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -86,7 +80,7 @@ with st.sidebar:
                 st.warning("Already Exists!")
     
     st.divider()
-    if st.button("Clear All Mappings (Danger)"):
+    if st.button("Clear All Mappings"):
         if os.path.exists(MAPPING_FILE):
             os.remove(MAPPING_FILE)
             st.session_state.master_df = pd.DataFrame(columns=['Portal_SKU', 'Master_SKU'])
@@ -94,7 +88,6 @@ with st.sidebar:
 
 # --- MAIN UI ---
 st.title("🚀 Aavoni Smart Picklist PRO")
-st.write("Multiple Portals (FK, Meesho, Myntra) Unified Tool")
 
 uploaded_files = st.file_uploader("Upload CSV Files", type="csv", accept_multiple_files=True)
 
@@ -104,7 +97,6 @@ if uploaded_files:
         df = pd.read_csv(file)
         cols = {c.lower().replace(" ", "_"): c for c in df.columns}
         
-        # Standardize SKU & Qty Columns
         sku_col = next((cols[k] for k in ['sku', 'seller_sku', 'product_id', 'item_id'] if k in cols), None)
         qty_col = next((cols[k] for k in ['quantity', 'qty', 'item_qty', 'order_qty'] if k in cols), None)
         
@@ -124,12 +116,10 @@ if uploaded_files:
 
         if unmapped_skus:
             st.subheader("🔍 Review & Link New SKUs")
-            st.info("Pehle 'Master SKU Selection' check karein, fir 'Confirm' tick karke save karein.")
-            
             master_options = sorted(st.session_state.master_df['Master_SKU'].dropna().unique().tolist())
             
             if not master_options:
-                st.error("Sidebar se kam se kam ek Master SKU add karein!")
+                st.error("Sidebar se Master SKU add karein!")
             else:
                 mapping_table_data = []
                 for sku in unmapped_skus:
@@ -163,18 +153,23 @@ if uploaded_files:
                         st.success("Mappings Saved!")
                         st.rerun()
                     else:
-                        st.warning("Please select at least one row to confirm.")
+                        st.warning("Please tick 'Confirm' to save.")
         
         else:
-            # --- GENERATE FINAL PICKLIST ---
+            # --- FINAL OUTPUT SECTION ---
             st.subheader("📋 Consolidated Picklist")
             final_merged = pd.merge(combined_df, st.session_state.master_df, on='Portal_SKU', how='left')
-            
-            # Summary Table
-            summary = final_merged.groupby('Master_SKU')['Qty'].sum().reset_index()
-            summary = summary.sort_values('Qty', ascending=False)
+            summary = final_merged.groupby('Master_SKU')['Qty'].sum().reset_index().sort_values('Qty', ascending=False)
             
             col_res, col_metric = st.columns([3, 1])
             with col_res:
                 st.table(summary)
-            with
+            
+            with col_metric:
+                total_qty = int(summary['Qty'].sum())
+                st.metric("Total Pcs", total_qty)
+                csv_data = summary.to_csv(index=False).encode('utf-8')
+                st.download_button("📥 Download CSV", csv_data, "Picklist.csv", "text/csv")
+
+            with st.expander("Detailed View"):
+                st.dataframe(final_merged[['Source', 'Portal_SKU', 'Master_SKU', 'Qty']])
