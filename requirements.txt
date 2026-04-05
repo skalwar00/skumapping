@@ -1,6 +1,8 @@
+streamlit
 gspread
 google-auth
 thefuzz
+python-Levenshtein
 pandas
 openpyxl
 cryptography
