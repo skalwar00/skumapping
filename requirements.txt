@@ -1,8 +1,10 @@
 streamlit
+pandas
 gspread
 google-auth
 thefuzz
 python-Levenshtein
-pandas
 openpyxl
 cryptography
+reportlab
+xlsxwriter
