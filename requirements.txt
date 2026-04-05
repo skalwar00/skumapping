@@ -1,6 +1,6 @@
-streamlit
-pandas
-thefuzz
-openpyxl
 gspread
 google-auth
+thefuzz
+pandas
+openpyxl
+cryptography
