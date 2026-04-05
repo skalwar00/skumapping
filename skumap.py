@@ -23,7 +23,7 @@ def get_gspread_client():
         st.error(f"❌ Connection Error: {e}")
         st.stop()
 
-# --- CONFIGURATION (YOUR PERMANENT SHEET ID) ---
+# --- CONFIGURATION ---
 SHEET_ID = "1VZ5QLBQwH_r8kNSsUFacrS7_VSMJ556vO8C53s8Jwr0" 
 
 try:
@@ -32,7 +32,6 @@ try:
     worksheet = sh.get_worksheet(0)
 except Exception as e:
     st.error(f"❌ Google Sheet Connection Issue: {e}")
-    st.info("Check karein ki picklist@sound-habitat-492421-d0.iam.gserviceaccount.com ko Sheet par Editor access diya hai ya nahi.")
     st.stop()
 
 # --- DATA FUNCTIONS ---
@@ -40,9 +39,7 @@ def load_data():
     try:
         records = worksheet.get_all_records()
         df = pd.DataFrame(records)
-        if df.empty:
-            return pd.DataFrame(columns=['Portal_SKU', 'Master_SKU'])
-        return df
+        return df if not df.empty else pd.DataFrame(columns=['Portal_SKU', 'Master_SKU'])
     except:
         return pd.DataFrame(columns=['Portal_SKU', 'Master_SKU'])
 
@@ -53,54 +50,63 @@ def save_mapping(p_sku, m_sku):
 def smart_hybrid_matcher(new_sku, master_options):
     new_sku_str = str(new_sku).upper()
     if not master_options: return "Select Manually", 0
-    
     best_m, high_s = "Select Manually", 0
     for opt in master_options:
         score = fuzz.token_set_ratio(new_sku_str, str(opt).upper())
-        if score > high_s:
-            high_s, best_m = score, opt
-            
+        if score > high_s: high_s, best_m = score, opt
     return best_m, high_s
 
 # --- APP UI ---
 st.title("🚀 Aavoni Smart Picklist PRO")
 
-if 'master_df' not in st.session_state:
-    st.session_state.master_df = load_data()
+# 1. MASTER INVENTORY UPLOAD SECTION
+with st.expander("📥 Step 1: Upload Master Inventory (CSV/XLSX)", expanded=False):
+    m_file = st.file_uploader("Apni Master SKU file yahan upload karein", type=['csv', 'xlsx'], key="master_up")
+    if m_file:
+        df_m = pd.read_csv(m_file) if m_file.name.endswith('.csv') else pd.read_excel(m_file)
+        # Find SKU column
+        m_col = next((c for c in df_m.columns if 'master' in c.lower() or 'sku' in c.lower()), df_m.columns[0])
+        st.write(f"Detected Master Column: **{m_col}**")
+        
+        if st.button("Add to Google Sheet"):
+            new_skus = df_m[m_col].dropna().unique()
+            current_master = load_data()['Master_SKU'].tolist()
+            added_count = 0
+            for sku in new_skus:
+                if str(sku).strip() not in current_master:
+                    save_mapping("", sku)
+                    added_count += 1
+            st.success(f"Done! {added_count} naye Master SKUs add ho gaye.")
+            st.rerun()
 
-if st.sidebar.button("🔄 Sync Sheet"):
-    st.session_state.master_df = load_data()
-    st.sidebar.success("Synced!")
+st.divider()
 
-files = st.file_uploader("Upload Portal Orders (Flipkart/Meesho/Myntra)", type="csv", accept_multiple_files=True)
+# 2. PORTAL ORDERS UPLOAD
+st.subheader("📤 Step 2: Upload Portal Orders")
+files = st.file_uploader("Flipkart/Meesho reports upload karein", type="csv", accept_multiple_files=True)
 
 if files:
     orders_list = []
     for f in files:
         df = pd.read_csv(f)
-        # --- SMART COLUMN DETECTION ---
         cols = {str(c).lower().strip().replace(" ", "_"): c for c in df.columns}
+        s_keys = ['sku', 'seller_sku', 'listing_id', 'product_id', 'order_item_sku', 'external_id']
+        q_keys = ['quantity', 'qty', 'ordered_quantity']
         
-        # Extended list of SKU keys
-        sku_keys = ['sku', 'seller_sku', 'product_id', 'listing_id', 'order_item_sku', 'item_sku', 'external_id']
-        qty_keys = ['quantity', 'qty', 'item_qty', 'ordered_quantity', 'order_item_quantity']
-        
-        s_col = next((cols[k] for k in sku_keys if k in cols), None)
-        q_col = next((cols[k] for k in qty_keys if k in cols), None)
+        s_col = next((cols[k] for k in s_keys if k in cols), None)
+        q_col = next((cols[k] for k in q_keys if k in cols), None)
         
         if s_col:
             t_df = pd.DataFrame()
             t_df['Portal_SKU'] = df[s_col].astype(str).str.strip()
             t_df['Qty'] = pd.to_numeric(df[q_col], errors='coerce').fillna(1) if q_col else 1
             orders_list.append(t_df)
-        else:
-            st.error(f"❌ File '{f.name}' mein SKU column nahi mila! Columns found: {list(df.columns)}")
-
+    
     if orders_list:
         combined = pd.concat(orders_list, ignore_index=True)
-        
-        # Fresh Database
         current_db = load_data()
+        
+        # Create Mapping Dictionary
         active_map = current_db[current_db['Portal_SKU'].astype(str).str.strip() != ""].copy()
         mapping_dict = dict(zip(active_map['Portal_SKU'].astype(str), active_map['Master_SKU'].astype(str)))
         
@@ -108,23 +114,20 @@ if files:
         combined['Master_SKU'] = combined['Portal_SKU'].map(mapping_dict)
         ready = combined.dropna(subset=['Master_SKU'])
         
-        st.subheader("📋 Consolidated Picklist (Mapped)")
+        st.subheader("📋 Final Picklist")
         if not ready.empty:
             summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index().sort_values('Qty', ascending=False)
             st.dataframe(summary, use_container_width=True)
-            st.metric("Total Pieces", int(summary['Qty'].sum()))
-            st.download_button("📥 Download Picklist CSV", summary.to_csv(index=False).encode('utf-8'), "Aavoni_Picklist.csv")
+            st.download_button("📥 Download Picklist", summary.to_csv(index=False).encode('utf-8'), "Picklist.csv")
         else:
-            st.info("Abhi tak koi item match nahi hua. Niche Review section check karein.")
+            st.info("Abhi tak koi item match nahi hua.")
 
         st.divider()
 
-        # 2. REVIEW NEW MAPPINGS
-        unique_portal_skus = combined['Portal_SKU'].unique()
-        unmapped = [s for s in unique_portal_skus if str(s) not in mapping_dict]
-        
+        # 2. REVIEW & LINK
+        unmapped = [s for s in combined['Portal_SKU'].unique() if str(s) not in mapping_dict]
         if unmapped:
-            st.subheader("🔍 Review & Link New SKUs")
+            st.subheader("🔍 Review New Portal SKUs")
             m_options = sorted(current_db['Master_SKU'].unique().tolist())
             
             if m_options:
@@ -133,23 +136,13 @@ if files:
                     sugg, score = smart_hybrid_matcher(s, m_options)
                     review_data.append({"Confirm": (score >= 90), "Portal SKU": s, "Master SKU": sugg, "Match": f"{score}%"})
                 
-                edited = st.data_editor(
-                    pd.DataFrame(review_data), 
-                    column_config={
-                        "Confirm": st.column_config.CheckboxColumn(),
-                        "Master SKU": st.column_config.SelectboxColumn(options=m_options)
-                    }, 
-                    disabled=["Portal SKU", "Match"], 
-                    hide_index=True, 
-                    key="mapping_editor_final"
-                )
+                edited = st.data_editor(pd.DataFrame(review_data), key="editor_v7", hide_index=True)
                 
-                if st.button("Save New Links to Google Sheet"):
+                if st.button("Save Selected Mappings"):
                     to_save = edited[edited['Confirm'] == True]
-                    if not to_save.empty:
-                        for _, row in to_save.iterrows():
-                            save_mapping(row['Portal SKU'], row['Master SKU'])
-                        st.success("Google Sheets Updated! Refreshing...")
-                        st.rerun()
+                    for _, row in to_save.iterrows():
+                        save_mapping(row['Portal SKU'], row['Master SKU'])
+                    st.success("Saved! Refreshing...")
+                    st.rerun()
             else:
-                st.error("Google Sheet mein Master SKUs nahi mile. Sheet check karein!")
+                st.warning("Master Inventory khali hai! Upar 'Step 1' se file upload karein.")
