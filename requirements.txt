@@ -1,12 +1,7 @@
 streamlit
 pandas
-gspread
 supabase
 thefuzz
-python-Levenshtein
-openpyxl
-cryptography
-reportlab
-xlsxwriter
 pdfplumber
 reportlab
+openpyxl
