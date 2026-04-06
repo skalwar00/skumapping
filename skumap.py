@@ -61,7 +61,6 @@ def extract_meesho_pdf(pdf_file):
                 sku_idx = size_idx = qty_idx = None
                 header_row_index = -1
 
-                # Dynamic Header Search
                 for i, row in enumerate(table):
                     row_str = " ".join([str(cell).lower() for cell in row if cell])
                     if 'sku' in row_str and ('qty' in row_str or 'quantity' in row_str):
@@ -144,14 +143,20 @@ if files:
             df = pd.read_csv(f)
             cols = {str(c).lower().strip().replace(" ", "_"): c for c in df.columns}
             
-            # --- UPDATED CSV KEYWORDS ---
+            # --- UPDATED CSV LOGIC WITH SAFETY ---
             s_col = next((cols[k] for k in ['sku', 'seller_sku', 'seller_sku_code', 'listing_id', 'product_id'] if k in cols), None)
-            q_col = next((cols[k] for k in ['quantity', 'qty', 'ordered_quantity', 'total_quantity'] if k in cols), None)
+            q_col = next((cols[k] for k in ['quantity', 'qty', 'ordered_quantity', 'total_quantity', 'item_quantity'] if k in cols), None)
             
             if s_col:
+                # Agar quantity column nahi mila to default 1 le lo (prevents KeyError)
+                if q_col:
+                    qty_data = pd.to_numeric(df[q_col], errors='coerce').fillna(1)
+                else:
+                    qty_data = 1
+                
                 orders_list.append(pd.DataFrame({
                     'Portal_SKU': df[s_col].astype(str).str.strip(), 
-                    'Qty': pd.to_numeric(df[q_col], errors='coerce').fillna(1)
+                    'Qty': qty_data
                 }))
             else:
                 st.error(f"❌ '{f.name}' mein SKU column nahi mila. Header check karein.")
@@ -189,7 +194,7 @@ if files:
                     "Confirm": st.column_config.CheckboxColumn(),
                     "Master SKU": st.column_config.SelectboxColumn(options=all_master_options),
                 },
-                hide_index=True, key="aavoni_editor"
+                hide_index=True, key="aavoni_editor_final"
             )
 
             col1, col2 = st.columns(2)
