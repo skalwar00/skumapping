@@ -24,7 +24,7 @@ try:
     key = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
 except Exception as e:
-    st.error("❌ Supabase Secrets Missing! Check Settings > Secrets.")
+    st.error("❌ Supabase Secrets Missing!")
     st.stop()
 
 if 'user' not in st.session_state:
@@ -50,7 +50,7 @@ def load_all_data(u_id):
         profile = p_res.data[0] if p_res.data else None
         
         return m_dict, c_dict, m_list, profile
-    except Exception as e:
+    except:
         return {}, {}, [], None
 
 def generate_4x6_pdf(df):
@@ -73,55 +73,36 @@ def generate_4x6_pdf(df):
     buffer.seek(0)
     return buffer
 
-# --- 4. AUTH & SIDEBAR ---
+# --- 4. AUTH & MAIN UI ---
 if st.session_state.user is None:
     st.title("🚀 Aavoni Seller Suite")
     with st.sidebar:
         mode = st.radio("Action", ["Login", "Signup"])
         with st.form("auth"):
-            e = st.text_input("Email")
-            p = st.text_input("Password", type="password")
+            e, p = st.text_input("Email"), st.text_input("Password", type="password")
             if st.form_submit_button("Submit"):
                 try:
-                    if mode == "Login":
-                        res = supabase.auth.sign_in_with_password({"email": e, "password": p})
-                    else:
-                        res = supabase.auth.sign_up({"email": e, "password": p})
-                        st.info("Signup initiated. Check email or Login if Confirm-Email is OFF.")
-                    if res.session:
-                        st.session_state.user = res.user
-                        st.rerun()
-                except Exception as ex:
-                    st.error(f"Auth Error: {ex}")
+                    res = (supabase.auth.sign_in_with_password if mode=="Login" else supabase.auth.sign_up)({"email":e, "password":p})
+                    if res.session: st.session_state.user = res.user; st.rerun()
+                except Exception as ex: st.error(f"Error: {ex}")
 else:
     u_id = st.session_state.user.id
     mapping_dict, costing_dict, master_options, profile = load_all_data(u_id)
     
     with st.sidebar:
         st.header("👗 Aavoni Dashboard")
-        st.write(f"User: **{st.session_state.user.email}**")
-        
         if profile and profile.get('plan_expiry'):
             exp_dt = datetime.strptime(profile['plan_expiry'], '%Y-%m-%d').date()
             days_left = (exp_dt - date.today()).days
-            if days_left >= 0:
-                st.success(f"🎁 Free Trial: {days_left} Days Left")
-            else:
-                st.error("❌ Trial Expired")
-        
-        st.divider()
+            st.success(f"🎁 Trial: {max(0, days_left)} Days Left")
         if st.button("Logout"): 
-            supabase.auth.sign_out()
-            st.session_state.user = None
-            st.rerun()
+            supabase.auth.sign_out(); st.session_state.user = None; st.rerun()
 
-    # --- TABS SYSTEM ---
     t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
-    # --- TAB 1: PICKLIST (Priority Fixed) ---
     with t1:
         st.header("Order Processing & Picklist")
-        with st.expander("📥 Step 1: Master Inventory Sync"):
+        with st.expander("📥 Master Inventory Sync"):
             m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'], key="m_sync")
             if m_f and st.button("Sync Now"):
                 df_m = pd.read_csv(m_f)
@@ -138,15 +119,18 @@ else:
                     df_c.columns = [c.lower().strip() for c in df_c.columns]
                     
                     sku_col = None
-                    # Priority check for Myntra
+                    # Priority 1: Strict Seller SKU Code
                     if 'seller sku code' in df_c.columns:
                         sku_col = 'seller sku code'
+                    # Priority 2: Other SKU columns but NOT Myntra system SKU
                     else:
-                        sku_col = next((c for c in df_c.columns if any(x in c for x in ['sku', 'seller_sku', 'item sku', 'fsn'])), None)
+                        sku_col = next((c for c in df_c.columns if any(x in c for x in ['sku', 'seller_sku', 'item sku']) and 'myntra' not in c), None)
                     
                     if sku_col:
+                        st.write(f"✔️ Processing column: `{sku_col}` from `{f.name}`")
                         for s in df_c[sku_col].dropna(): 
                             orders_list.append({'Portal_SKU': str(s).strip().upper(), 'Qty': 1})
+                
                 elif f.name.endswith('.pdf'):
                     with pdfplumber.open(f) as pdf:
                         for page in pdf.pages:
@@ -157,8 +141,6 @@ else:
             
             if orders_list:
                 df_ord = pd.DataFrame(orders_list)
-                st.info(f"Orders Found: {len(df_ord)}")
-                
                 if st.button("🖨️ Generate 4x6 Picklist PDF"):
                     df_ord['Master_SKU'] = df_ord['Portal_SKU'].map(mapping_dict)
                     ready = df_ord.dropna(subset=['Master_SKU'])
@@ -182,18 +164,17 @@ else:
                         map_rows.append({"Confirm": (score > 90), "Portal SKU": s, "Master SKU": best})
                     
                     edited = st.data_editor(pd.DataFrame(map_rows), column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)}, hide_index=True)
-                    if st.button("Save Selected Mappings"):
+                    if st.button("Save Mappings"):
                         to_db = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in edited.iterrows() if r['Confirm']]
                         if to_db:
                             supabase.table("sku_mapping").upsert(to_db, on_conflict="user_id, portal_sku").execute()
                             st.success("Saved!"); st.rerun()
 
-    # --- TAB 2: COSTING ---
+    # --- TAB 2, 3, 4 (Previous logic remains same) ---
     with t2:
         st.header("💰 Costing Manager")
         kurti_base = st.number_input("Default Kurti Cost", value=250)
         set_base = st.number_input("Default Set Cost", value=450)
-        
         all_designs = sorted(list(set([get_design_pattern(s) for s in master_options])))
         with st.form("cost_form"):
             sel = st.selectbox("Select Design", options=all_designs)
@@ -203,7 +184,6 @@ else:
                 st.success("Cost Saved!"); st.rerun()
         st.dataframe(pd.DataFrame(list(costing_dict.items()), columns=['Design', 'Cost']))
 
-    # --- TAB 3: FLIPKART ---
     with t3:
         st.header("📊 Flipkart Profitability")
         fk_file = st.file_uploader("Upload Flipkart Orders Excel", type=["xlsx"], key="fk_pnl")
@@ -217,15 +197,13 @@ else:
                     pat = get_design_pattern(m_sku)
                     cost = costing_dict.get(pat, set_base if "SET" in m_sku else kurti_base)
                     return row[sett_col] - cost
-                
                 df_fk['Profit'] = df_fk.apply(calc_profit, axis=1)
                 st.metric("Total Profit", f"₹{int(df_fk['Profit'].sum()):,}")
                 st.dataframe(df_fk[[sku_col, sett_col, 'Profit']])
 
-    # --- TAB 4: MYNTRA ---
     with t4:
         st.header("👗 Myntra Smart P&L")
-        m_files = st.file_uploader("Upload Myntra Reports (Flow & Settlements)", type=['csv'], accept_multiple_files=True)
+        m_files = st.file_uploader("Upload Myntra Reports", type=['csv'], accept_multiple_files=True, key="mynt_pnl")
         if len(m_files) >= 2:
             flow_df, sett_list = None, []
             for f in m_files:
@@ -233,7 +211,6 @@ else:
                 tdf.columns = [c.lower().strip() for c in tdf.columns]
                 if 'sale_order_code' in tdf.columns: flow_df = tdf
                 if 'total_actual_settlement' in tdf.columns: sett_list.append(tdf)
-            
             if flow_df is not None and sett_list:
                 s_sum = pd.concat(sett_list).groupby('order_release_id')['total_actual_settlement'].sum().reset_index()
                 final = pd.merge(flow_df, s_sum, left_on='sale_order_code', right_on='order_release_id', how='left')
