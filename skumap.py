@@ -30,6 +30,7 @@ if 'user' not in st.session_state: st.session_state.user = None
 # --- 3. SHARED UTILS ---
 def get_design_pattern(master_sku):
     sku = str(master_sku).upper().strip()
+    # Removes size suffixes like -S, -M, -3XL etc.
     sku = re.sub(r'[-_](S|M|L|XL|XXL|\d*XL|FREE|SMALL|LARGE)$', '', sku)
     sku = re.sub(r'\(.*?\)', '', sku)
     return sku.strip('-_ ')
@@ -87,6 +88,7 @@ else:
     mapping_dict, costing_dict, master_options = load_all_data(u_id)
     
     with st.sidebar:
+        st.write(f"Logged in: {st.session_state.user.email}")
         if st.button("Logout"): 
             supabase.auth.sign_out(); st.session_state.user = None; st.rerun()
 
@@ -119,15 +121,18 @@ else:
                             if table:
                                 for row in table[1:]:
                                     if row and row[0]: orders_data.append({'Portal_SKU': str(row[0]).strip(), 'Qty': 1})
+            
             if orders_data:
                 combined = pd.DataFrame(orders_data)
                 st.success(f"Orders Loaded: {len(combined)}")
+                
                 if st.button("Generate 4x6 Picklist"):
                     combined['Master_SKU'] = combined['Portal_SKU'].map(mapping_dict)
                     ready = combined.dropna(subset=['Master_SKU'])
                     if not ready.empty:
-                        pdf = generate_4x6_pdf(ready.groupby('Master_SKU')['Qty'].sum().reset_index())
-                        st.download_button("📥 Download PDF", pdf, "picklist.pdf", "application/pdf")
+                        summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index()
+                        pdf_file = generate_4x6_pdf(summary)
+                        st.download_button("📥 Download PDF", pdf_file, "picklist.pdf", "application/pdf")
                 
                 st.divider()
                 unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
@@ -140,6 +145,7 @@ else:
                             score = fuzz.token_set_ratio(s.upper(), opt.upper())
                             if score > hs: hs, best = score, opt
                         map_rows.append({"Confirm": (hs >= 90), "Portal SKU": s, "Master SKU": best})
+                    
                     edited_map = st.data_editor(pd.DataFrame(map_rows), column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)}, hide_index=True)
                     if st.button("Save New Mappings"):
                         to_save = edited_map[edited_map['Confirm'] == True]
@@ -150,7 +156,6 @@ else:
     # --- TAB 2: COSTING MANAGER ---
     with t2:
         st.header("💰 Design-wise Costing Manager")
-        st.subheader("📊 Default Product Costs (Fallback)")
         col_c1, col_c2 = st.columns(2)
         kurti_base = col_c1.number_input("Kurti Single Cost (₹)", value=250)
         set_base = col_c2.number_input("Kurta Set Cost (₹)", value=450)
@@ -210,60 +215,50 @@ else:
                     m3.metric("Net Units", int(df[unit_col].sum()))
                     
                     st.divider()
-                    final_disp = df[[id_col, sku_col, 'Category', 'Unit_Cost', status_col, unit_col, sett_col, 'Net_Profit']].copy()
-                    st.dataframe(final_disp.sort_index(ascending=False), use_container_width=True, hide_index=True)
+                    st.dataframe(df[[id_col, sku_col, 'Category', 'Unit_Cost', status_col, unit_col, sett_col, 'Net_Profit']].sort_index(ascending=False), use_container_width=True, hide_index=True)
             except Exception as e: st.error(f"Error: {e}")
 
     # --- TAB 4: MYNTRA ANALYZER ---
     with t4:
-        st.title("👗 Myntra Smart P&L Analyzer 🚀")
-        m_files = st.file_uploader("Upload Myntra Reports (Flow, SKU, Settlements)", type=['csv'], accept_multiple_files=True, key="m_upload")
-        if st.button("Generate Myntra Analysis"):
-            if len(m_files) >= 2:
-                flow_df, sku_df, fwd_list, rev_list = None, None, [], []
-                for file in m_files:
-                    df_m = pd.read_csv(file)
-                    df_m.columns = [c.strip().lower() for c in df_m.columns]
-                    if 'sale_order_code' in df_m.columns: flow_df = df_m
-                    elif 'seller sku code' in df_m.columns and 'total_actual_settlement' not in df_m.columns: sku_df = df_m
-                    elif 'total_actual_settlement' in df_m.columns:
-                        fname = file.name.lower()
-                        if any(x in fname for x in ['reverse', 'return']): rev_list.append(df_m)
-                        else: fwd_list.append(df_m)
+        st.title("👗 Myntra Smart P&L Analyzer")
+        m_files = st.file_uploader("Upload Myntra Reports", type=['csv'], accept_multiple_files=True, key="m_upload")
+        if st.button("Generate Myntra Analysis") and len(m_files) >= 2:
+            flow_df, sku_df, fwd_list, rev_list = None, None, [], []
+            for file in m_files:
+                df_m = pd.read_csv(file)
+                df_m.columns = [c.strip().lower() for c in df_m.columns]
+                if 'sale_order_code' in df_m.columns: flow_df = df_m
+                elif 'seller sku code' in df_m.columns and 'total_actual_settlement' not in df_m.columns: sku_df = df_m
+                elif 'total_actual_settlement' in df_m.columns:
+                    if any(x in file.name.lower() for x in ['reverse', 'return']): rev_list.append(df_m)
+                    else: fwd_list.append(df_m)
 
-                if flow_df is not None and sku_df is not None:
-                    final = pd.merge(flow_df, sku_df[['order release id', 'seller sku code']], left_on='sale_order_code', right_on='order release id', how='left')
-                    fwd_sum = pd.concat(fwd_list).groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if fwd_list else pd.DataFrame(columns=['order_release_id','total_actual_settlement'])
-                    rev_sum = pd.concat(rev_list).groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if rev_list else pd.DataFrame(columns=['order_release_id','total_actual_settlement'])
-                    final = pd.merge(final, fwd_sum, left_on='sale_order_code', right_on='order_release_id', how='left')
-                    final = pd.merge(final, rev_sum, left_on='sale_order_code', right_on='order_release_id', how='left', suffixes=('_fwd', '_rev'))
-                    
-                    final['Net_Settlement'] = pd.to_numeric(final['total_actual_settlement_fwd'], errors='coerce').fillna(0) + pd.to_numeric(final['total_actual_settlement_rev'], errors='coerce').fillna(0)
-                    
-                    def get_m_cost(sku_name):
-                        p_sku = str(sku_name).strip().upper()
-                        m_sku = mapping_dict.get(p_sku, p_sku)
-                        pat = get_design_pattern(m_sku)
-                        if pat in costing_dict: return costing_dict[pat]
-                        return set_base if any(x in p_sku for x in ["SET", "KURTA", "CBO"]) else kurti_base
+            if flow_df is not None and sku_df is not None:
+                final = pd.merge(flow_df, sku_df[['order release id', 'seller sku code']], left_on='sale_order_code', right_on='order release id', how='left')
+                fwd_sum = pd.concat(fwd_list).groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if fwd_list else pd.DataFrame(columns=['order_release_id','total_actual_settlement'])
+                rev_sum = pd.concat(rev_list).groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if rev_list else pd.DataFrame(columns=['order_release_id','total_actual_settlement'])
+                final = pd.merge(final, fwd_sum, left_on='sale_order_code', right_on='order_release_id', how='left')
+                final = pd.merge(final, rev_sum, left_on='sale_order_code', right_on='order_release_id', how='left', suffixes=('_fwd', '_rev'))
+                
+                final['Net_Settlement'] = pd.to_numeric(final['total_actual_settlement_fwd'], errors='coerce').fillna(0) + pd.to_numeric(final['total_actual_settlement_rev'], errors='coerce').fillna(0)
+                
+                def get_m_cost(sku_name):
+                    p_sku = str(sku_name).strip().upper()
+                    m_sku = mapping_dict.get(p_sku, p_sku)
+                    pat = get_design_pattern(m_sku)
+                    if pat in costing_dict: return costing_dict[pat]
+                    return set_base if any(x in p_sku for x in ["SET", "KURTA", "CBO"]) else kurti_base
 
-                    final['Unit_Cost'] = final['seller sku code'].apply(get_m_cost)
-                    final['Total_Cost'] = final.apply(lambda x: x['Unit_Cost'] if str(x['order_item_status']).strip().lower() == 'delivered' else 0, axis=1)
-                    final['Net_Profit'] = final['Net_Settlement'] - final['Total_Cost']
-                    
-                    # --- MYNTRA METRICS (SUNIL STYLE) ---
-                    m_c1, m_c2, m_c3, m_c4 = st.columns(4)
-                    m_settle = final['Net_Settlement'].sum()
-                    m_profit = final['Net_Profit'].sum()
-                    m_return_count = len(final[final['Net_Settlement'] < 0])
-                    
-                    m_c1.metric("Net Payout", f"₹{int(m_settle):,}")
-                    m_c2.metric("Net Profit", f"₹{int(m_profit):,}", delta=f"{(m_profit/m_settle*100 if m_settle!=0 else 0):.1f}%")
-                    m_c3.metric("Orders Scanned", len(final))
-                    m_c4.metric("Returns", m_return_count, delta_color="inverse")
-                    
-                    st.divider()
-                    st.subheader("🔎 Myntra Breakdown")
-                    st.dataframe(final[['sale_order_code', 'seller sku code', 'order_item_status', 'Unit_Cost', 'Net_Settlement', 'Net_Profit']].sort_index(ascending=False), use_container_width=True, hide_index=True)
-                else:
-                    st.error("Essential Myntra reports (Flow or SKU) missing.")
+                final['Unit_Cost'] = final['seller sku code'].apply(get_m_cost)
+                final['Total_Cost'] = final.apply(lambda x: x['Unit_Cost'] if str(x['order_item_status']).strip().lower() == 'delivered' else 0, axis=1)
+                final['Net_Profit'] = final['Net_Settlement'] - final['Total_Cost']
+                
+                m_c1, m_c2, m_c3, m_c4 = st.columns(4)
+                m_settle, m_profit = final['Net_Settlement'].sum(), final['Net_Profit'].sum()
+                m_c1.metric("Net Payout", f"₹{int(m_settle):,}")
+                m_c2.metric("Net Profit", f"₹{int(m_profit):,}", delta=f"{(m_profit/m_settle*100 if m_settle!=0 else 0):.1f}%")
+                m_c3.metric("Orders", len(final))
+                m_c4.metric("Returns", len(final[final['Net_Settlement'] < 0]))
+                
+                st.divider()
+                st.dataframe(final[['sale_order_code', 'seller sku code', 'order_item_status', 'Unit_Cost', 'Net_Settlement', 'Net_Profit']].sort_index(ascending=False), use_container_width=True, hide_index=True)
