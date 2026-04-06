@@ -257,7 +257,7 @@ else:
     with t4:
         st.title("👗 Myntra Smart P&L & Return Analyzer")
 
-    uploaded_files = st.file_uploader(
+        uploaded_files = st.file_uploader(
         "Upload Flow + SKU + Settlement Files",
         type=['csv'],
         accept_multiple_files=True
