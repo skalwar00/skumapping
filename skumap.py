@@ -199,64 +199,88 @@ else:
                     st.dataframe(df_fk[df_fk['Net_Profit'] < 0][[order_id_col, sku_col, status_col, sett_col, 'Net_Profit']], use_container_width=True, hide_index=True)
             except Exception as e: st.error(f"Flipkart Error: {e}")
 
-    # --- TAB 4: MYNTRA ---
-with tabs[4]:
-    st.header("👗 Myntra Smart P&L")
-    m_files = st.file_uploader("Upload Myntra Reports", type=['csv'], accept_multiple_files=True, key="my_pnl_final")
-    
-    if len(m_files) >= 2:
-        flow_df, sett_list = None, []
-        for f in m_files:
-            tdf = pd.read_csv(f)
-            # Normalizing column names to avoid KeyErrors
-            tdf.columns = [c.lower().strip().replace(" ", "_") for c in tdf.columns]
-            if 'sale_order_code' in tdf.columns: flow_df = tdf
-            if 'total_actual_settlement' in tdf.columns: sett_list.append(tdf)
+    # --- TAB 4: MYNTRA (YOUR SCRIPT MODIFIED) ---
+    with tabs[4]:
+        st.title("Aavoni Myntra Smart P&L & Return Analyzer 🚀")
         
-        if flow_df is not None and sett_list:
-            # Settlement Merge Logic
-            s_sum = pd.concat(sett_list).groupby('order_release_id')['total_actual_settlement'].sum().reset_index()
-            final = pd.merge(flow_df, s_sum, left_on='sale_order_code', right_on='order_release_id', how='left')
-            final['total_actual_settlement'] = pd.to_numeric(final['total_actual_settlement'], errors='coerce').fillna(0)
-            
-            # Detect SKU Column
-            m_sku_col = next((c for c in final.columns if 'seller_sku' in c), None)
+        m_uploaded = st.file_uploader("Upload Myntra Files (Flow, SKU, Settlements)", 
+                                      type=['csv'], accept_multiple_files=True, key="myntra_bulk_upload")
 
-            # --- AUTOMATIC COSTING LOGIC START ---
-            def get_myntra_cost(row):
-                if not m_sku_col: return 0
-                p_sku = str(row[m_sku_col]).upper()
-                
-                # 1. Check if SKU is mapped to a Master SKU
-                m_sku = mapping_dict.get(p_sku, p_sku)
-                pat = get_design_pattern(m_sku)
-                
-                # 2. Try to fetch from Database (costing_dict)
-                if pat in costing_dict:
-                    return costing_dict[pat]
-                
-                # 3. Fallback to Default Logic (If not in DB)
-                # Agar "SET" ya "KURTA" hai toh 450, warna 250
-                if any(x in m_sku for x in ["SET", "KURTA"]):
-                    return 450 
-                return 250
-            # --- AUTOMATIC COSTING LOGIC END ---
+        # --- AUTOMATIC COSTING FUNCTION ---
+        def get_sku_cost_auto(sku_name):
+            sku = str(sku_name).upper().strip()
+            # 1. Database Check
+            m_sku = mapping_dict.get(sku, sku)
+            pat = get_design_pattern(m_sku)
+            if pat in costing_dict:
+                return costing_dict[pat]
+            
+            # 2. Fallback to your Fixed Logic
+            if sku.startswith('HF'):
+                return (hf_base * 2) if ('CBO' in sku or 'COMBO' in sku) else hf_base
+            elif sku.startswith('PT'):
+                return (std_base * 2) if ('CBO' in sku or 'COMBO' in sku) else std_base
+            return 0
 
-            final['Unit_Cost'] = final.apply(get_myntra_cost, axis=1)
-            
-            # Profit = Settlement - Cost (Sirf settled items ke liye)
-            final['Profit'] = final.apply(
-                lambda x: x['total_actual_settlement'] - x['Unit_Cost'] if x['total_actual_settlement'] > 0 else 0, 
-                axis=1
-            )
+        if st.button("Generate Myntra Smart Analysis"):
+            if len(m_uploaded) >= 4:
+                flow_df, sku_df, fwd_list, rev_list = None, None, [], []
 
-            # Top Metric
-            st.metric("Myntra Net Profit", f"₹{int(final['Profit'].sum()):,}")
-            
-            # Display Table
-            display_cols = ['sale_order_code', 'total_actual_settlement', 'Unit_Cost', 'Profit']
-            if m_sku_col: display_cols.insert(1, m_sku_col)
-            
-            st.dataframe(final[display_cols], use_container_width=True, hide_index=True)
-        else:
-            st.warning("Please upload both 'Flow' and 'Settlement' CSV files.")
+                for file in m_uploaded:
+                    df = pd.read_csv(file)
+                    cols = [c.strip().lower() for c in df.columns]
+                    
+                    if 'sale_order_code' in cols:
+                        flow_df = df
+                    elif 'seller sku code' in cols and 'total_actual_settlement' not in cols:
+                        sku_df = df
+                    elif 'total_actual_settlement' in cols:
+                        temp_val = pd.to_numeric(df['total_actual_settlement'], errors='coerce').mean()
+                        fname = file.name.lower()
+                        if any(x in fname for x in ['reverse', 'return']) or (temp_val is not None and temp_val < 0):
+                            rev_list.append(df)
+                        else:
+                            fwd_list.append(df)
+
+                if flow_df is not None and sku_df is not None:
+                    # Data Processing
+                    final = pd.merge(flow_df, sku_df[['order release id', 'seller sku code']], 
+                                    left_on='sale_order_code', right_on='order release id', how='left')
+
+                    fwd_combined = pd.concat(fwd_list, ignore_index=True) if fwd_list else pd.DataFrame(columns=['order_release_id', 'total_actual_settlement'])
+                    rev_combined = pd.concat(rev_list, ignore_index=True) if rev_list else pd.DataFrame(columns=['order_release_id', 'total_actual_settlement'])
+
+                    fwd_sum = fwd_combined.groupby('order_release_id')['total_actual_settlement'].sum().reset_index()
+                    rev_sum = rev_combined.groupby('order_release_id')['total_actual_settlement'].sum().reset_index()
+
+                    final = pd.merge(final, fwd_sum, left_on='sale_order_code', right_on='order_release_id', how='left').rename(columns={'total_actual_settlement': 'Forward_Amt'})
+                    final = pd.merge(final, rev_sum, left_on='sale_order_code', right_on='order_release_id', how='left').rename(columns={'total_actual_settlement': 'Reverse_Amt'})
+
+                    final['Forward_Amt'] = pd.to_numeric(final['Forward_Amt'], errors='coerce').fillna(0)
+                    final['Reverse_Amt'] = pd.to_numeric(final['Reverse_Amt'], errors='coerce').fillna(0)
+                    final['Net_Settlement'] = final['Forward_Amt'] + final['Reverse_Amt']
+                    final['seller sku code'] = final['seller sku code'].fillna("Unknown SKU")
+
+                    # Apply Automatic Costing
+                    final['Unit_Cost'] = final['seller sku code'].apply(get_sku_cost_auto)
+                    final['Total_Cost'] = final.apply(lambda x: x['Unit_Cost'] if str(x['order_item_status']).strip().lower() == 'delivered' else 0, axis=1)
+                    final['Net_Profit'] = final['Net_Settlement'] - final['Total_Cost']
+                    
+                    # Dashboard Metrics
+                    st.subheader("📊 Business Summary")
+                    c1, c2, c3, c4 = st.columns(4)
+                    net_pay = final['Net_Settlement'].sum()
+                    net_prof = final['Net_Profit'].sum()
+                    c1.metric("Net Bank Payout", f"₹{net_pay:,.0f}")
+                    c2.metric("Total SKU Cost", f"₹{final['Total_Cost'].sum():,.0f}")
+                    c3.metric("Net Profit", f"₹{net_prof:,.0f}")
+                    c4.metric("Margin", f"{(net_prof/net_pay*100 if net_pay!=0 else 0):.1f}%")
+
+                    st.divider()
+                    st.subheader("Order Breakup")
+                    ui_cols = ['sale_order_code', 'seller sku code', 'order_item_status', 'Net_Settlement', 'Net_Profit']
+                    st.dataframe(final[ui_cols], use_container_width=True)
+                else:
+                    st.error("Error: Flow Report ya SKU Report nahi mili.")
+            else:
+                st.warning("Kam se kam 4 reports upload karein (Flow, SKU, Forward Settlements, Reverse Settlements).")
