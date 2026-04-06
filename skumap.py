@@ -3,16 +3,17 @@ import pandas as pd
 import re
 import io
 
-# --- CRITICAL IMPORTS WITH ERROR HANDLING ---
+# --- CRITICAL IMPORTS WITH FIXED COMPATIBILITY ---
 try:
     from supabase import create_client, Client
     from thefuzz import fuzz
     import pdfplumber
-    from reportlab.lib.pagesizes import Inch
+    # Unit import fix for Python 3.11+
+    from reportlab.lib.units import Inch 
     from reportlab.pdfgen import canvas
 except ImportError as e:
-    st.error(f"❌ Libraries are still installing: {e}")
-    st.info("Please wait 1-2 minutes for Streamlit to finish installation.")
+    st.error(f"❌ Library Error: {e}")
+    st.info("Please wait for Streamlit to finish installation or check requirements.txt")
     st.stop()
 
 # --- PAGE SETUP ---
@@ -47,7 +48,7 @@ def signup_user(email, password):
     except:
         st.sidebar.error("Signup Failed")
 
-# --- CREDIT & DATA FUNCTIONS ---
+# --- DATA & CREDIT FUNCTIONS ---
 def get_user_credits(user_id):
     try:
         res = supabase.table("profiles").select("credits").eq("id", user_id).single().execute()
@@ -56,6 +57,7 @@ def get_user_credits(user_id):
         return 0
 
 def deduct_credits(user_id, order_count):
+    # Logic: 4 orders = 1 credit
     needed = (order_count // 4) + (1 if order_count % 4 > 0 else 0)
     current = get_user_credits(user_id)
     if current >= needed:
@@ -198,7 +200,6 @@ else:
                     else: st.warning("No mappings found.")
                 else: st.error(f"Need {cost} credits.")
 
-            # --- MAPPING ---
             st.divider()
             m_d = dict(zip(mapping_df['portal_sku'].astype(str), mapping_df['master_sku'].astype(str)))
             unmapped = [s for s in combined['Portal_SKU'].unique() if str(s) not in m_d]
