@@ -27,10 +27,6 @@ except Exception as e:
     st.error("❌ Supabase Secrets Missing!")
     st.stop()
 
-# --- Tab Navigation Logic ---
-if 'active_tab' not in st.session_state:
-    st.session_state.active_tab = "🏠 Home"
-
 if 'user' not in st.session_state:
     st.session_state.user = None
 
@@ -104,45 +100,28 @@ else:
         if st.button("Logout"): 
             supabase.auth.sign_out(); st.session_state.user = None; st.rerun()
 
-    # --- TABS SYSTEM ---
-    tab_list = ["🏠 Home", "📦 Picklist", "💰 Costing", "📊 Flipkart", "👗 Myntra"]
-    
-    # Logic to switch tabs via button
-    active_index = tab_list.index(st.session_state.active_tab)
-    tabs = st.tabs(tab_list)
+    # --- MAIN TABS ---
+    t0, t1, t2, t3, t4 = st.tabs(["🏠 Home", "📦 Picklist", "💰 Costing", "📊 Flipkart", "👗 Myntra"])
 
-    # --- TAB 0: HOMEPAGE ---
-    with tabs[0]:
-        st.title(f"Welcome, {st.session_state.user.email.split('@')[0].capitalize()}! 👋")
-        st.markdown("### Manage your business with Aavoni Tools")
+    # --- TAB 0: HOMEPAGE (Good Looking) ---
+    with t0:
+        st.title(f"Welcome back, {st.session_state.user.email.split('@')[0].capitalize()}! 👋")
+        st.markdown("### Powering your E-commerce Business with Aavoni")
         
         col1, col2, col3 = st.columns(3)
         with col1:
-            st.info("#### 📦 Smart Picklist\nThermal-ready 4x6 PDF and auto SKU mapping.")
-            if st.button("Go to Picklist ➡️"):
-                st.session_state.active_tab = "📦 Picklist"
-                st.rerun()
-                
+            st.info("#### 📦 Smart Picklist\nUpload your portal orders and get a thermal-ready 4x6 PDF in seconds. No more manual sorting.")
         with col2:
-            st.success("#### 💰 Costing Manager\nManage design-wise costs & pattern matching.")
-            if st.button("Go to Costing ➡️"):
-                st.session_state.active_tab = "💰 Costing"
-                st.rerun()
-                
+            st.success("#### 💰 Costing Manager\nManage design-wise landed costs. Track Kurta sets vs Kurtis automatically with pattern matching.")
         with col3:
-            st.warning("#### 📊 P&L Analytics\nDetailed Myntra & Flipkart profit reports.")
-            if st.button("Go to Analytics ➡️"):
-                st.session_state.active_tab = "📊 Flipkart"
-                st.rerun()
-
+            st.warning("#### 📊 P&L Analytics\nDeep dive into Flipkart and Myntra settlements. Know exactly how much you earn after COGS.")
+        
         st.divider()
-        st.write("#### 🛠️ Quick Status")
-        c1, c2 = st.columns(2)
-        c1.metric("Mapped SKUs", len(mapping_dict))
-        c2.metric("Saved Designs", len(costing_dict))
+        st.write("#### 🛠️ Quick Start Guide")
+        st.write("1. **Sync Inventory:** Go to 'Picklist' tab and upload your Master SKU list.\n2. **Map SKUs:** Upload orders; if new SKUs appear, map them once and forget.\n3. **Set Costs:** Update landed costs in 'Costing' to see accurate profit reports.")
 
     # --- TAB 1: PICKLIST ---
-    with tabs[1]:
+    with t1:
         st.header("Order Processing & Picklist")
         with st.expander("📥 Master Inventory Sync"):
             m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'], key="m_sync")
@@ -162,6 +141,7 @@ else:
                     sku_col = None
                     if 'seller sku code' in df_c.columns: sku_col = 'seller sku code'
                     else: sku_col = next((c for c in df_c.columns if any(x in c for x in ['sku', 'seller_sku', 'item sku']) and 'myntra' not in c), None)
+                    
                     if sku_col:
                         for s in df_c[sku_col].dropna(): 
                             orders_list.append({'Portal_SKU': str(s).strip().upper(), 'Qty': 1})
@@ -182,30 +162,72 @@ else:
                         summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index()
                         pdf = generate_4x6_pdf(summary)
                         st.download_button("📥 Download PDF", pdf, f"Picklist_{date.today()}.pdf")
-                    else: st.error("No SKUs mapped.")
+                    else: st.error("No SKUs mapped. Map them below first.")
 
-    # --- TAB 2, 3, 4 (Rest of the logic remains the same) ---
-    with tabs[2]:
+                unmapped = [s for s in df_ord['Portal_SKU'].unique() if s not in mapping_dict]
+                if unmapped:
+                    st.subheader("🔍 New SKU Mappings")
+                    map_rows = []
+                    for s in unmapped:
+                        best, score = "Select", 0
+                        for opt in master_options:
+                            sc = fuzz.token_set_ratio(s, opt)
+                            if sc > score: score, best = sc, opt
+                        map_rows.append({"Confirm": (score > 90), "Portal SKU": s, "Master SKU": best})
+                    edited = st.data_editor(pd.DataFrame(map_rows), column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)}, hide_index=True)
+                    if st.button("Save Mappings"):
+                        to_db = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in edited.iterrows() if r['Confirm']]
+                        if to_db:
+                            supabase.table("sku_mapping").upsert(to_db, on_conflict="user_id, portal_sku").execute()
+                            st.success("Saved!"); st.rerun()
+
+    # --- TAB 2: COSTING ---
+    with t2:
         st.header("💰 Costing Manager")
-        kurti_base = st.number_input("Default Kurti Cost", value=250)
-        set_base = st.number_input("Default Set Cost", value=450)
+        col_c1, col_c2 = st.columns(2)
+        kurti_base = col_c1.number_input("Default Kurti Cost", value=250)
+        set_base = col_c2.number_input("Default Set Cost", value=450)
         all_designs = sorted(list(set([get_design_pattern(s) for s in master_options])))
         with st.form("cost_form"):
-            sel = st.selectbox("Select Design", options=all_designs)
+            sel = st.selectbox("Select Design Pattern", options=all_designs)
             new_val = st.number_input("Landed Cost", value=float(costing_dict.get(sel, 0.0)))
             if st.form_submit_button("Save Costing"):
                 supabase.table("design_costing").upsert({"user_id": u_id, "design_pattern": sel, "landed_cost": new_val}, on_conflict="user_id, design_pattern").execute()
                 st.success("Cost Saved!"); st.rerun()
+        st.dataframe(pd.DataFrame(list(costing_dict.items()), columns=['Design', 'Cost']), use_container_width=True)
 
-    with tabs[3]:
+    # --- TAB 3: FLIPKART ---
+    with t3:
         st.header("📊 Flipkart Profitability")
-        fk_file = st.file_uploader("Upload Flipkart Excel", type=["xlsx"], key="fk_pnl")
+        fk_file = st.file_uploader("Upload Flipkart Orders Excel", type=["xlsx"], key="fk_pnl")
         if fk_file:
             df_fk = pd.read_excel(fk_file)
-            st.info("Calculation logic running...")
+            sku_col, sett_col = "SKU Name", "Bank Settlement [Projected] (INR)"
+            if sku_col in df_fk.columns and sett_col in df_fk.columns:
+                def calc_profit(row):
+                    p_sku = str(row[sku_col]).upper()
+                    m_sku = mapping_dict.get(p_sku, p_sku)
+                    pat = get_design_pattern(m_sku)
+                    cost = costing_dict.get(pat, set_base if any(x in m_sku for x in ["SET", "KURTA", "CBO"]) else kurti_base)
+                    return row[sett_col] - cost
+                df_fk['Profit'] = df_fk.apply(calc_profit, axis=1)
+                st.metric("Total P&L (Selected Data)", f"₹{int(df_fk['Profit'].sum()):,}")
+                st.dataframe(df_fk[[sku_col, sett_col, 'Profit']], use_container_width=True)
 
-    with tabs[4]:
+    # --- TAB 4: MYNTRA ---
+    with t4:
         st.header("👗 Myntra Smart P&L")
-        m_files = st.file_uploader("Upload Myntra CSVs", type=['csv'], accept_multiple_files=True, key="mynt_pnl")
+        m_files = st.file_uploader("Upload Myntra Reports (Flow & Settlements)", type=['csv'], accept_multiple_files=True, key="mynt_pnl")
         if len(m_files) >= 2:
-            st.info("Analysis ready.")
+            flow_df, sett_list = None, []
+            for f in m_files:
+                tdf = pd.read_csv(f)
+                tdf.columns = [c.lower().strip() for c in tdf.columns]
+                if 'sale_order_code' in tdf.columns: flow_df = tdf
+                if 'total_actual_settlement' in tdf.columns: sett_list.append(tdf)
+            if flow_df is not None and sett_list:
+                s_sum = pd.concat(sett_list).groupby('order_release_id')['total_actual_settlement'].sum().reset_index()
+                final = pd.merge(flow_df, s_sum, left_on='sale_order_code', right_on='order_release_id', how='left')
+                final['Settlement'] = pd.to_numeric(final['total_actual_settlement'], errors='coerce').fillna(0)
+                st.metric("Myntra Net Payout", f"₹{int(final['Settlement'].sum()):,}")
+                st.dataframe(final[['sale_order_code', 'order_item_status', 'Settlement']], use_container_width=True)
