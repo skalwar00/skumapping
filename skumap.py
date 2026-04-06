@@ -285,8 +285,8 @@ else:
 
         return 0
 
-     if st.button("Generate Smart Analysis"):
-        if uploaded_files and len(uploaded_files) >= 4:
+      if st.button("Generate Smart Analysis"):
+          if uploaded_files and len(uploaded_files) >= 4:
 
             flow_df = None
             sku_df = None
