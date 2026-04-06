@@ -4,228 +4,200 @@ import gspread
 from google.oauth2.service_account import Credentials
 import base64
 import json
-import re
-import io
-import pdfplumber
-from datetime import datetime
 from thefuzz import fuzz
+import re
+import pdfplumber
+import io
 
-# PDF Report Generation
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.lib import colors as rl_colors
-from reportlab.lib.units import inch
-from reportlab.lib.enums import TA_CENTER
+# --- PAGE SETUP ---
+st.set_page_config(page_title="Aavoni Smart Picklist PRO", layout="wide")
 
-# --- CONFIG & UI STYLING ---
-st.set_page_config(page_title="Aavoni Pro: Multi-Portal Picklist", layout="wide", page_icon="📦")
-
-st.markdown("""
-    <style>
-    .main { background-color: #f8f9fa; }
-    .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); border-left: 5px solid #007bff; }
-    div.stButton > button:first-child { background-color: #007bff; color: white; border-radius: 6px; font-weight: bold; height: 3em; }
-    .css-10trblm { color: #007bff; } /* Header color */
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- CONSTANTS & DATABASE ---
-SHEET_ID = "1VZ5QLBQwH_r8kNSsUFacrS7_VSMJ556vO8C53s8Jwr0"
-
-def get_gsheet_client():
+# --- GOOGLE SHEETS CONNECTION ---
+def get_gspread_client():
     try:
         encoded_key = st.secrets["gcp_service_account"]["encoded_key"]
-        creds_info = json.loads(base64.b64decode(encoded_key).decode("utf-8"))
+        decoded_key = base64.b64decode(encoded_key).decode("utf-8")
+        creds_info = json.loads(decoded_key)
         scope = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        return gspread.authorize(Credentials.from_service_account_info(creds_info, scopes=scope))
+        creds = Credentials.from_service_account_info(creds_info, scopes=scope)
+        return gspread.authorize(creds)
     except Exception as e:
-        st.error(f"⚠️ Connection Error: {e}"); st.stop()
+        st.error(f"❌ Connection Error: {e}")
+        st.stop()
 
-@st.cache_data(ttl=30)
-def load_db():
+# --- CONFIGURATION ---
+SHEET_ID = "1VZ5QLBQwH_r8kNSsUFacrS7_VSMJ556vO8C53s8Jwr0" 
+
+try:
+    gc = get_gspread_client()
+    sh = gc.open_by_key(SHEET_ID)
+    worksheet = sh.get_worksheet(0)
+except Exception as e:
+    st.error(f"❌ Google Sheet Connection Issue: {e}")
+    st.stop()
+
+# --- DATA FUNCTIONS ---
+def load_data():
     try:
-        gc = get_gsheet_client()
-        sh = gc.open_by_key(SHEET_ID)
-        ws = sh.get_worksheet(0)
-        data = ws.get_all_records()
-        return pd.DataFrame(data) if data else pd.DataFrame(columns=['Portal_SKU', 'Master_SKU']), ws
+        records = worksheet.get_all_records()
+        return pd.DataFrame(records) if records else pd.DataFrame(columns=['Portal_SKU', 'Master_SKU'])
     except:
-        return pd.DataFrame(columns=['Portal_SKU', 'Master_SKU']), None
+        return pd.DataFrame(columns=['Portal_SKU', 'Master_SKU'])
 
-# --- CORE LOGIC FUNCTIONS ---
+def bulk_save_to_gsheet(rows):
+    if rows:
+        worksheet.append_rows(rows)
 
-def get_universal_cat(sku):
-    sku = str(sku).upper().replace("-", " ").replace("_", " ")
-    parts = sku.split()
-    return parts[0][:8] if parts else "ITEM"
-
-def extract_size(sku):
-    sku = str(sku).upper().strip()
-    match = re.search(r'[-_\s](S|M|L|XL|XXL|\dXL)$', sku)
-    if not match: match = re.search(r'\b(S|M|L|XL|XXL|\dXL)\b', sku)
-    return match.group(1) if match else "Free"
-
-# --- MEESHO PDF PARSER (SKU + SIZE MERGE) ---
-def parse_meesho_pdf(pdf_file):
-    rows = []
+# --- MEESHO PDF EXTRACTOR ---
+def extract_meesho_pdf(pdf_file):
+    data = []
     with pdfplumber.open(pdf_file) as pdf:
         for page in pdf.pages:
-            tables = page.extract_tables()
-            for table in tables:
-                if not table: continue
-                df_p = pd.DataFrame(table[1:], columns=table[0])
-                df_p.columns = [str(c).upper().replace("\n", " ").strip() for c in df_p.columns]
-                
-                # Identify Columns
-                s_col = next((c for c in df_p.columns if any(k in c for k in ['SKU', 'PRODUCT', 'SELLER'])), None)
-                q_col = next((c for c in df_p.columns if any(k in c for k in ['QTY', 'QUANTITY'])), None)
-                z_col = next((c for c in df_p.columns if 'SIZE' in c), None)
-                
-                if s_col and q_col:
-                    for _, row in df_p.iterrows():
-                        base_sku = str(row[s_col]).strip().upper()
-                        size_val = str(row[z_col]).strip().upper() if z_col and row[z_col] else ""
+            table = page.extract_table()
+            if table:
+                df_tmp = pd.DataFrame(table)
+                # Meesho PDF mein usually 3rd column SKU info hota hai
+                # Hum pure text mein se SKU aur Qty nikalne ki koshish karenge
+                for row in table:
+                    row_str = " ".join([str(i) for i in row if i])
+                    # Regex to find SKU and Size patterns like (S), (XL), etc.
+                    # Meesho layout: SKU ID followed by (Size)
+                    if "SKU" in row_str or "Product" in row_str:
+                        continue
+                    
+                    # Logic: Meesho manifest rows usually have SKU in a specific cell
+                    # adjustment based on common Meesho PDF structure
+                    sku_cell = str(row[2]) if len(row) > 2 else ""
+                    qty_cell = str(row[3]) if len(row) > 3 else "1"
+                    
+                    if sku_cell and sku_cell != "None" and len(sku_cell) > 3:
+                        # Clean SKU: Remove "SKU:" label if exists
+                        clean_sku = sku_cell.replace("SKU:", "").strip()
+                        qty = re.findall(r'\d+', qty_cell)
+                        final_qty = int(qty[0]) if qty else 1
                         
-                        # Smart Merge: SKU + Size (Avoid double size if already in SKU)
-                        if size_val and size_val not in base_sku:
-                            final_sku = f"{base_sku}-{size_val}"
-                        else:
-                            final_sku = base_sku
-                        
-                        if base_sku and base_sku != 'NONE':
-                            rows.append({
-                                'SKU': final_sku,
-                                'Qty': pd.to_numeric(row[q_col], errors='coerce') or 1
-                            })
-    return pd.DataFrame(rows)
+                        data.append({'Portal_SKU': clean_sku, 'Qty': final_qty})
+    return pd.DataFrame(data)
 
-# --- PDF GENERATOR (3x5 INCH) ---
-def generate_pdf_report(df):
-    buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=(3*inch, 5*inch), margin=0.05*inch)
-    elements, styles = [], getSampleStyleSheet()
-    sN = styles['Normal'].clone('sN'); sN.fontSize = 7; sN.alignment = TA_CENTER
-    
-    elements.append(Paragraph(f"<b>AAVONI PRO PICKLIST</b>", sN))
-    elements.append(Paragraph(f"<font size=5>{datetime.now().strftime('%d/%m %H:%M')}</font>", sN))
-    
-    t_data = [["Category", "Size", "Qty", "Done"]]
-    for _, r in df.iterrows():
-        t_data.append([r["Category"], r["Size"], int(r["Qty"]), "[ ]"])
-    
-    table = Table(t_data, colWidths=[1.1*inch, 0.7*inch, 0.5*inch, 0.5*inch])
-    table.setStyle(TableStyle([
-        ('BACKGROUND',(0,0),(-1,0),rl_colors.black),
-        ('TEXTCOLOR',(0,0),(-1,0),rl_colors.white),
-        ('GRID',(0,0),(-1,-1),0.2,rl_colors.grey),
-        ('FONTSIZE',(0,0),(-1,-1),7),
-        ('ALIGN',(0,0),(-1,-1),'CENTER')
-    ]))
-    elements.append(table); doc.build(elements); buf.seek(0)
-    return buf
+def clean_sku_for_pattern(sku):
+    sku = str(sku).upper()
+    # Sizes aur common suffixes hatana
+    patterns_to_remove = [r'\(.*\)', r'\bS\b', r'\bM\b', r'\bL\b', r'\bXL\b', r'\b\d*XL\b', r'-\s*$', r'_\s*$']
+    for p in patterns_to_remove:
+        sku = re.sub(p, '', sku)
+    return sku.strip('-_ ')
 
-# --- MAIN APP UI ---
-st.title("🌍 Aavoni Universal Pro Tool")
+def smart_hybrid_matcher(new_sku, master_options):
+    new_sku_str = str(new_sku).upper()
+    if not master_options: return "Select Manually", 0
+    best_m, high_s = "Select Manually", 0
+    for opt in master_options:
+        score = fuzz.token_set_ratio(new_sku_str, str(opt).upper())
+        if score > high_s:
+            high_s, best_m = score, opt
+    return best_m, high_s
 
-db_df, ws = load_db()
-master_list = sorted([str(m).strip().upper() for m in db_df['Master_SKU'].unique() if str(m).strip() != ""])
+# --- APP UI ---
+st.title("🚀 Aavoni Smart Picklist PRO")
 
-with st.sidebar:
-    st.header("⚙️ Dashboard Settings")
-    if st.button("🔄 Sync Database"): st.rerun()
-    
-    with st.expander("📥 Master SKU Upload"):
-        m_file = st.file_uploader("First-time Master SKU File", type=['csv', 'xlsx'])
-        if m_file:
-            m_df = pd.read_csv(m_file) if m_file.name.endswith('.csv') else pd.read_excel(m_file)
-            m_col = st.selectbox("Select Master SKU Column", m_df.columns)
-            if st.button("Bulk Add Master SKUs"):
-                new_m = [str(s).strip().upper() for s in m_df[m_col].dropna().unique() if str(s).strip().upper() not in master_list]
-                if new_m and ws:
-                    ws.append_rows([["", s] for s in new_m])
-                    st.success(f"{len(new_m)} Master SKUs added!"); st.rerun()
+current_db = load_data()
+all_master_options = sorted([str(m).strip().upper() for m in current_db['Master_SKU'].unique() if str(m).strip() != ""])
 
-st.subheader("📤 Step 1: Upload Portal Files")
-c1, c2 = st.columns(2)
-with c1:
-    f_csv = st.file_uploader("Upload Flipkart/CSV Files", type=['csv', 'xlsx'], accept_multiple_files=True)
-with c2:
-    f_pdf = st.file_uploader("Upload Meesho Manifests (PDF)", type=['pdf'], accept_multiple_files=True)
+# 1. MASTER INVENTORY UPLOAD
+with st.expander("📥 Step 1: Upload Master Inventory"):
+    m_file = st.file_uploader("Master SKU file upload", type=['csv', 'xlsx'])
+    if m_file:
+        df_m = pd.read_csv(m_file) if m_file.name.endswith('.csv') else pd.read_excel(m_file)
+        m_col = next((c for c in df_m.columns if 'master' in c.lower() or 'sku' in c.lower()), df_m.columns[0])
+        if st.button("Add Master SKUs"):
+            new_skus = set([str(sku).strip().upper() for sku in df_m[m_col].dropna().unique()])
+            existing = set(all_master_options)
+            rows = [["", s] for s in new_skus if s not in existing]
+            if rows: bulk_save_to_gsheet(rows); st.rerun()
 
-all_orders = []
+st.divider()
 
-# Process CSV/XLSX
-if f_csv:
-    for f in f_csv:
-        df_t = pd.read_csv(f) if f.name.endswith('.csv') else pd.read_excel(f)
-        cols = {c.lower().strip().replace(" ", "_"): c for c in df_t.columns}
-        s_col = next((cols[k] for k in ['sku', 'seller_sku', 'listing_id', 'product_id'] if k in cols), None)
-        q_col = next((cols[k] for k in ['qty', 'quantity', 'ordered_quantity'] if k in cols), None)
-        if s_col:
-            all_orders.append(pd.DataFrame({'SKU': df_t[s_col].astype(str).str.strip().upper(), 'Qty': pd.to_numeric(df_t[q_col], errors='coerce').fillna(1)}))
+# 2. PORTAL ORDERS UPLOAD (CSV & PDF)
+files = st.file_uploader("Upload Portal Orders (Flipkart CSV / Meesho PDF)", type=["csv", "pdf"], accept_multiple_files=True)
 
-# Process PDF
-if f_pdf:
-    for f in f_pdf:
-        pdf_res = parse_meesho_pdf(f)
-        if not pdf_res.empty: all_orders.append(pdf_res)
-
-if all_orders:
-    raw_orders = pd.concat(all_orders)
-    map_dict = dict(zip(db_df['Portal_SKU'].astype(str), db_df['Master_SKU'].astype(str)))
-    
-    processed_list = []
-    need_mapping = []
-    
-    for _, row in raw_orders.iterrows():
-        sku = str(row['SKU']).strip()
-        if sku in map_dict:
-            m_sku = map_dict[sku]
-            processed_list.append({'Category': get_universal_cat(m_sku), 'Size': extract_size(m_sku), 'Qty': row['Qty']})
+if files:
+    orders_list = []
+    for f in files:
+        if f.name.endswith('.pdf'):
+            with st.spinner(f"Reading Meesho PDF: {f.name}..."):
+                pdf_df = extract_meesho_pdf(f)
+                if not pdf_df.empty: orders_list.append(pdf_df)
         else:
-            processed_list.append({'Category': get_universal_cat(sku), 'Size': extract_size(sku), 'Qty': row['Qty']})
-            need_mapping.append(sku)
+            df = pd.read_csv(f)
+            cols = {str(c).lower().strip().replace(" ", "_"): c for c in df.columns}
+            s_col = next((cols[k] for k in ['sku', 'seller_sku', 'listing_id'] if k in cols), None)
+            q_col = next((cols[k] for k in ['quantity', 'qty', 'ordered_quantity'] if k in cols), None)
+            if s_col:
+                orders_list.append(pd.DataFrame({
+                    'Portal_SKU': df[s_col].astype(str).str.strip(), 
+                    'Qty': pd.to_numeric(df[q_col], errors='coerce').fillna(1)
+                }))
 
-    final_df = pd.DataFrame(processed_list).groupby(['Category', 'Size'], as_index=False)['Qty'].sum()
-    
-    # Dashboard Metrics
-    m1, m2, m3 = st.columns(3)
-    m1.metric("📦 Total Qty", int(final_df['Qty'].sum()))
-    m2.metric("🆕 New SKUs", len(set(need_mapping)))
-    m3.metric("📂 Files", len(all_orders))
-
-    st.subheader("📋 Consolidated Picklist")
-    st.dataframe(final_df.sort_values('Category'), use_container_width=True, hide_index=True)
-
-    # Downloads
-    d1, d2 = st.columns(2)
-    with d1: st.download_button("📄 PDF Report (3x5)", generate_pdf_report(final_df), "PickList.pdf", use_container_width=True)
-    with d2:
-        xlsx_buf = io.BytesIO(); final_df.to_excel(xlsx_buf, index=False)
-        st.download_button("📥 Excel File", xlsx_buf.getvalue(), "PickList.xlsx", use_container_width=True)
-
-    # Step 2: Mapping Section
-    if need_mapping and master_list:
-        st.divider()
-        st.subheader("🔍 Review & Link New SKUs")
-        unique_new = sorted(list(set(need_mapping)))
+    if orders_list:
+        combined = pd.concat(orders_list, ignore_index=True)
+        # Mapping Logic
+        active_map = current_db[current_db['Portal_SKU'].astype(str).str.strip() != ""].copy()
+        m_dict = dict(zip(active_map['Portal_SKU'].astype(str), active_map['Master_SKU'].astype(str)))
         
-        # Fuzzy Auto-Suggestion
-        review_rows = []
-        for s in unique_new:
-            best_m, best_s = master_list[0], 0
-            for m in master_list:
-                score = fuzz.token_set_ratio(s, m)
-                if score > best_s: best_s, best_m = score, m
-            review_rows.append({'Save': (best_s > 88), 'Portal SKU': s, 'Master SKU': best_m})
-
-        edited = st.data_editor(pd.DataFrame(review_rows), column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_list)}, hide_index=True)
+        combined['Master_SKU'] = combined['Portal_SKU'].map(m_dict)
+        ready = combined.dropna(subset=['Master_SKU'])
         
-        if st.button("🚀 Update Mappings to Google Sheet"):
-            to_save = edited[edited['Save'] == True]
-            if not to_save.empty and ws:
-                ws.append_rows([[r['Portal SKU'], r['Master SKU']] for _, r in to_save.iterrows()])
-                st.success("Database Updated Successfully!"); st.rerun()
+        if not ready.empty:
+            st.subheader("📋 Final Picklist (Ready to Pack)")
+            summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index().sort_values('Qty', ascending=False)
+            st.table(summary) # Table for clear view
 
-else:
-    st.info("👋 Hey Sunil! Start by uploading your portal files (CSV/Excel) or Meesho Manifests (PDF).")
+        # 3. REVIEW & LINK (st.data_editor)
+        unmapped = [s for s in combined['Portal_SKU'].unique() if str(s) not in m_dict]
+        if unmapped:
+            st.warning(f"Found {len(unmapped)} New SKUs. Please map them below.")
+            
+            if 'temp_review_df' not in st.session_state:
+                review_data = []
+                for s in unmapped:
+                    sugg, score = smart_hybrid_matcher(s, all_master_options)
+                    review_data.append({"Confirm": (score >= 90), "Portal SKU": s, "Master SKU": sugg, "Match Score": f"{score}%"})
+                st.session_state.temp_review_df = pd.DataFrame(review_data)
+
+            edited_df = st.data_editor(
+                st.session_state.temp_review_df,
+                column_config={
+                    "Confirm": st.column_config.CheckboxColumn(),
+                    "Master SKU": st.column_config.SelectboxColumn(options=all_master_options),
+                },
+                hide_index=True, key="meesho_editor"
+            )
+
+            col1, col2 = st.columns(2)
+            with col1:
+                if st.button("Apply Pattern to All Sizes"):
+                    # Manual change pakadne ke liye logic
+                    learning_dict = {}
+                    for i, row in edited_df.iterrows():
+                        if row['Master SKU'] != st.session_state.temp_review_df.iloc[i]['Master SKU']:
+                            pattern = clean_sku_for_pattern(row['Portal SKU'])
+                            learning_dict[pattern] = row['Master SKU']
+                    
+                    if learning_dict:
+                        for i, row in edited_df.iterrows():
+                            pat = clean_sku_for_pattern(row['Portal SKU'])
+                            if pat in learning_dict:
+                                edited_df.at[i, 'Master SKU'] = learning_dict[pat]
+                                edited_df.at[i, 'Confirm'] = True
+                        st.session_state.temp_review_df = edited_df
+                        st.rerun()
+
+            with col2:
+                if st.button("Save & Update Picklist"):
+                    to_save = edited_df[edited_df['Confirm'] == True]
+                    if not to_save.empty:
+                        rows = [[str(r['Portal SKU']), str(r['Master SKU'])] for _, r in to_save.iterrows()]
+                        bulk_save_to_gsheet(rows)
+                        st.success("Database Updated!")
+                        del st.session_state.temp_review_df
+                        st.rerun()
