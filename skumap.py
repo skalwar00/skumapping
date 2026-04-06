@@ -58,13 +58,12 @@ def extract_meesho_pdf(pdf_file):
                 if not table or len(table) < 2:
                     continue
                 
-                # --- Step 1: Dynamic Header Detection ---
                 sku_idx = size_idx = qty_idx = None
                 header_row_index = -1
 
+                # Dynamic Header Search
                 for i, row in enumerate(table):
                     row_str = " ".join([str(cell).lower() for cell in row if cell])
-                    # Checking for core keywords
                     if 'sku' in row_str and ('qty' in row_str or 'quantity' in row_str):
                         header_row_index = i
                         for idx, cell in enumerate(row):
@@ -74,7 +73,6 @@ def extract_meesho_pdf(pdf_file):
                             if 'qty' in c_text or 'quantity' in c_text: qty_idx = idx
                         break
                 
-                # --- Step 2: Extraction ---
                 if sku_idx is not None:
                     for row in table[header_row_index + 1:]:
                         if not row[sku_idx]: continue
@@ -82,23 +80,18 @@ def extract_meesho_pdf(pdf_file):
                         raw_sku = str(row[sku_idx]).strip()
                         size = str(row[size_idx]).strip() if size_idx is not None else ""
                         
-                        # Qty Calculation
                         qty_val = 1
                         if qty_idx is not None:
                             qty_text = str(row[qty_idx])
                             nums = re.findall(r'\d+', qty_text)
                             qty_val = int(nums[0]) if nums else 1
 
-                        # Combined Portal SKU (Ignoring Color as requested)
                         full_portal_sku = f"{raw_sku} {size}".strip()
-                        
                         data.append({'Portal_SKU': full_portal_sku, 'Qty': qty_val})
-    
     return pd.DataFrame(data)
 
 def clean_sku_for_pattern(sku):
     sku = str(sku).upper()
-    # Sizes aur patterns hatana pattern matching ke liye
     patterns_to_remove = [r'\(.*\)', r'\bS\b', r'\bM\b', r'\bL\b', r'\bXL\b', r'\b\d*XL\b', r'-\s*$', r'_\s*$']
     for p in patterns_to_remove:
         sku = re.sub(p, '', sku)
@@ -150,13 +143,18 @@ if files:
         else:
             df = pd.read_csv(f)
             cols = {str(c).lower().strip().replace(" ", "_"): c for c in df.columns}
-            s_col = next((cols[k] for k in ['sku', 'seller_sku', 'listing_id'] if k in cols), None)
-            q_col = next((cols[k] for k in ['quantity', 'qty', 'ordered_quantity'] if k in cols), None)
+            
+            # --- UPDATED CSV KEYWORDS ---
+            s_col = next((cols[k] for k in ['sku', 'seller_sku', 'seller_sku_code', 'listing_id', 'product_id'] if k in cols), None)
+            q_col = next((cols[k] for k in ['quantity', 'qty', 'ordered_quantity', 'total_quantity'] if k in cols), None)
+            
             if s_col:
                 orders_list.append(pd.DataFrame({
                     'Portal_SKU': df[s_col].astype(str).str.strip(), 
                     'Qty': pd.to_numeric(df[q_col], errors='coerce').fillna(1)
                 }))
+            else:
+                st.error(f"❌ '{f.name}' mein SKU column nahi mila. Header check karein.")
 
     if orders_list:
         combined = pd.concat(orders_list, ignore_index=True)
@@ -176,7 +174,7 @@ if files:
         # 3. REVIEW & LINK
         unmapped = [s for s in combined['Portal_SKU'].unique() if str(s) not in m_dict]
         if unmapped:
-            st.warning(f"Found {len(unmapped)} New SKUs. Please map them below.")
+            st.warning(f"Found {len(unmapped)} New SKUs.")
             
             if 'temp_review_df' not in st.session_state:
                 review_data = []
@@ -191,7 +189,7 @@ if files:
                     "Confirm": st.column_config.CheckboxColumn(),
                     "Master SKU": st.column_config.SelectboxColumn(options=all_master_options),
                 },
-                hide_index=True, key="meesho_v2"
+                hide_index=True, key="aavoni_editor"
             )
 
             col1, col2 = st.columns(2)
@@ -218,5 +216,6 @@ if files:
                     if not to_save.empty:
                         rows = [[str(r['Portal SKU']), str(r['Master SKU'])] for _, r in to_save.iterrows()]
                         bulk_save_to_gsheet(rows)
-                        st.success("Mapping Saved Successfully!")
-                        del st
+                        st.success("Mapping Saved!")
+                        del st.session_state.temp_review_df
+                        st.rerun()
