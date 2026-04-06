@@ -3,14 +3,14 @@ import pandas as pd
 import re
 import io
 
-# --- CRITICAL IMPORTS WITH FIXED COMPATIBILITY ---
+# --- CRITICAL IMPORTS WITH MANUAL UNIT DEFINITION ---
 try:
     from supabase import create_client, Client
     from thefuzz import fuzz
     import pdfplumber
-    # Unit import fix for Python 3.11+
-    from reportlab.lib.units import Inch 
     from reportlab.pdfgen import canvas
+    # Manual definition to avoid ImportErrors
+    INCH = 72 
 except ImportError as e:
     st.error(f"❌ Library Error: {e}")
     st.info("Please wait for Streamlit to finish installation or check requirements.txt")
@@ -57,7 +57,6 @@ def get_user_credits(user_id):
         return 0
 
 def deduct_credits(user_id, order_count):
-    # Logic: 4 orders = 1 credit
     needed = (order_count // 4) + (1 if order_count % 4 > 0 else 0)
     current = get_user_credits(user_id)
     if current >= needed:
@@ -73,20 +72,24 @@ def load_user_db(user_id):
     master_list = [i['master_sku'].upper() for i in i_res.data] if i_res.data else []
     return df_map, sorted(master_list)
 
-# --- PDF GENERATOR (4x6 Inch) ---
+# --- PDF GENERATOR (4x6 Inch Manual Scaling) ---
 def generate_4x6_pdf(df):
     buffer = io.BytesIO()
-    w, h = 4*Inch, 6*Inch
+    # 4 inches = 4 * 72 points, 6 inches = 6 * 72 points
+    w, h = 4 * INCH, 6 * INCH
     c = canvas.Canvas(buffer, pagesize=(w, h))
+    
     c.setFont("Helvetica-Bold", 14)
     c.drawCentredString(w/2, h - 30, "SMART PICKLIST PRO")
     c.line(20, h-40, w-20, h-40)
+    
     y = h - 60
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, "Master SKU")
     c.drawString(w-60, y, "Qty")
     y -= 15
     c.line(20, y+10, w-20, y+10)
+    
     c.setFont("Helvetica", 9)
     for _, row in df.iterrows():
         if y < 40:
@@ -95,6 +98,7 @@ def generate_4x6_pdf(df):
         c.drawString(30, y, str(row['Master_SKU'])[:25])
         c.drawString(w-55, y, str(row['Qty']))
         y -= 15
+        
     c.save()
     buffer.seek(0)
     return buffer
@@ -135,8 +139,8 @@ def extract_meesho_pdf(pdf_file):
                         s, sz = str(row[sku_idx]).strip(), str(row[size_idx]).strip() if size_idx is not None else ""
                         q = 1
                         if qty_idx is not None:
-                            n = re.findall(r'\d+', str(row[qty_idx]))
-                            q = int(n[0]) if n else 1
+                            nums = re.findall(r'\d+', str(row[qty_idx]))
+                            q = int(nums[0]) if nums else 1
                         data.append({'Portal_SKU': f"{s} {sz}".strip(), 'Qty': q})
     return pd.DataFrame(data)
 
