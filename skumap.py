@@ -254,133 +254,123 @@ else:
 
             except Exception as e: st.error(f"Error: {e}")
 
-    # --- TAB 4: MYNTRA PROFIT ---
     with t4:
         st.title("👗 Myntra Smart P&L & Return Analyzer")
 
         uploaded_files = st.file_uploader(
             "Upload Flow + SKU + Settlement Files",
             type=['csv'],
-            accept_multiple_files=True,
-            key="myntra_uploader"
+            accept_multiple_files=True
         )
 
-        # Costing Helper Function
         def get_final_cost(sku_name):
             sku = str(sku_name).strip()
-            # 1. Check Mapping
             mapped = mapping_dict.get(sku.upper(), sku)
-            # 2. Extract Pattern
             pattern = get_design_pattern(mapped)
-            # 3. Check DB
             if pattern in costing_dict:
                 return costing_dict[pattern]
-            # 4. Fallback Logic
             sku_up = sku.upper()
             if sku_up.startswith('HF'):
-                return 230 if any(x in sku_up for x in ['CBO', 'COMBO']) else 115
+                return 230 if ('CBO' in sku_up or 'COMBO' in sku_up) else 115
             elif sku_up.startswith('PT'):
-                return 330 if any(x in sku_up for x in ['CBO', 'COMBO']) else 165
+                return 330 if ('CBO' in sku_up or 'COMBO' in sku_up) else 165
             return 0
 
+        # --- FIX: Sabhi logic button ke andar honi chahiye ---
         if st.button("Generate Smart Analysis"):
-            if uploaded_files and len(uploaded_files) >= 3: # Changed to 3 as minimum
+            if uploaded_files and len(uploaded_files) >= 3: # 3-4 files check
+
                 flow_df = None
                 sku_df = None
                 fwd_list = []
                 rev_list = []
 
-                # --- 1. FILE IDENTIFICATION ---
+                # --- FILE DETECTION ---
                 for file in uploaded_files:
                     df = pd.read_csv(file)
-                    cols = [c.strip().lower() for c in df.columns]
+                    # Column names ko clean karna zaroori hai KeyError se bachne ke liye
+                    df.columns = [c.strip().lower() for c in df.columns]
+                    cols = df.columns
 
                     if 'sale_order_code' in cols:
                         flow_df = df
                     elif 'seller sku code' in cols and 'total_actual_settlement' not in cols:
                         sku_df = df
                     elif 'total_actual_settlement' in cols:
-                        # Logic to differentiate Forward vs Reverse
-                        avg_settlement = pd.to_numeric(df['total_actual_settlement'], errors='coerce').mean()
+                        temp_val = pd.to_numeric(df['total_actual_settlement'], errors='coerce').mean()
                         fname = file.name.lower()
-                        if 'reverse' in fname or 'return' in fname or (avg_settlement < 0):
+                        if 'reverse' in fname or 'return' in fname or (temp_val is not None and temp_val < 0):
                             rev_list.append(df)
                         else:
                             fwd_list.append(df)
 
-                # --- 2. DATA MERGING ---
+                # --- PROCESS ---
                 if flow_df is not None and sku_df is not None:
-                    # Merge Flow with SKU Mapping
+                    # Merge logic (Lower case handles spaces/casing issues)
                     final = pd.merge(
                         flow_df,
                         sku_df[['order release id', 'seller sku code']].drop_duplicates(),
                         left_on='sale_order_code',
-                        right_on='order_release_id',
+                        right_on='order release id',
                         how='left'
                     )
 
-                    # Aggregate Payments
-                    fwd_combined = pd.concat(fwd_list, ignore_index=True) if fwd_list else pd.DataFrame(columns=['order_release_id', 'total_actual_settlement'])
-                    rev_combined = pd.concat(rev_list, ignore_index=True) if rev_list else pd.DataFrame(columns=['order_release_id', 'total_actual_settlement'])
+                    fwd_combined = pd.concat(fwd_list, ignore_index=True) if fwd_list else pd.DataFrame()
+                    rev_combined = pd.concat(rev_list, ignore_index=True) if rev_list else pd.DataFrame()
 
-                    fwd_sum = fwd_combined.groupby('order_release_id')['total_actual_settlement'].sum().reset_index()
-                    rev_sum = rev_combined.groupby('order_release_id')['total_actual_settlement'].sum().reset_index()
+                    fwd_sum = fwd_combined.groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if not fwd_combined.empty else pd.DataFrame()
+                    rev_sum = rev_combined.groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if not rev_combined.empty else pd.DataFrame()
 
-                    final = pd.merge(final, fwd_sum, left_on='sale_order_code', right_on='order_release_id', how='left').rename(columns={'total_actual_settlement': 'Forward_Amt'})
-                    final = pd.merge(final, rev_sum, left_on='sale_order_code', right_on='order_release_id', how='left').rename(columns={'total_actual_settlement': 'Reverse_Amt'})
+                    final = pd.merge(final, fwd_sum, left_on='sale_order_code', right_on='order_release_id', how='left')
+                    final.rename(columns={'total_actual_settlement': 'Forward_Amt'}, inplace=True)
 
-                    # Clean Data
-                    final['Forward_Amt'] = final['Forward_Amt'].fillna(0)
-                    final['Reverse_Amt'] = final['Reverse_Amt'].fillna(0)
+                    final = pd.merge(final, rev_sum, left_on='sale_order_code', right_on='order_release_id', how='left')
+                    final.rename(columns={'total_actual_settlement': 'Reverse_Amt'}, inplace=True)
+
+                    final['Forward_Amt'] = pd.to_numeric(final['Forward_Amt'], errors='coerce').fillna(0)
+                    final['Reverse_Amt'] = pd.to_numeric(final['Reverse_Amt'], errors='coerce').fillna(0)
                     final['Net_Settlement'] = final['Forward_Amt'] + final['Reverse_Amt']
-                    final['seller sku code'] = final['seller sku code'].fillna("UNKNOWN")
-
-                    # --- 3. P&L CALCULATION ---
-                    final['Unit_Cost'] = final['seller sku code'].apply(get_final_cost)
                     
-                    # Cost is only applied if it was actually delivered to customer (not RTO)
+                    final['seller sku code'] = final['seller sku code'].fillna("Unknown SKU")
+                    final['order_item_status'] = final['order_item_status'].fillna("Not Found")
+
+                    # COSTING
+                    final['Unit_Cost'] = final['seller sku code'].apply(get_final_cost)
                     final['Total_Cost'] = final.apply(
-                        lambda x: x['Unit_Cost'] if str(x['order_item_status']).lower() in ['delivered', 'shipped'] else 0,
+                        lambda x: x['Unit_Cost'] if str(x['order_item_status']).lower() == 'delivered' else 0,
                         axis=1
                     )
                     final['Net_Profit'] = final['Net_Settlement'] - final['Total_Cost']
 
-                    # Status Labeling
-                    def label_status(row):
-                        if row['Net_Settlement'] == 0: return "RTO / Cancelled"
-                        if row['Reverse_Amt'] < 0: return "Customer Return"
+                    def label_order(net):
+                        if net == 0: return "RTO"
+                        if net < 0: return "Customer Return"
                         return "Delivered & Paid"
-                    
-                    final['Order_Type'] = final.apply(label_status, axis=1)
 
-                    # --- 4. DASHBOARD ---
-                    st.subheader("📊 Performance Summary")
+                    final['Order_Type'] = final['Net_Settlement'].apply(label_order)
+
+                    # --- DASHBOARD ---
+                    st.subheader("📊 Summary")
                     c1, c2, c3, c4 = st.columns(4)
-                    
-                    t_pay = final['Net_Settlement'].sum()
-                    t_cost = final['Total_Cost'].sum()
-                    t_prof = final['Net_Profit'].sum()
-                    margin = (t_prof / t_pay * 100) if t_pay != 0 else 0
+                    total_settlement = final['Net_Settlement'].sum()
+                    total_profit = final['Net_Profit'].sum()
 
-                    c1.metric("Net Payout", f"₹{int(t_pay):,}")
-                    c2.metric("Total Product Cost", f"₹{int(t_cost):,}")
-                    c3.metric("Net Profit", f"₹{int(t_prof):,}")
-                    c4.metric("Profit Margin", f"{margin:.1f}%")
+                    c1.metric("Net Payout", f"₹{int(total_settlement):,}")
+                    c2.metric("Total Cost", f"₹{int(final['Total_Cost'].sum()):,}")
+                    c3.metric("Net Profit", f"₹{int(total_profit):,}")
+                    c4.metric("Margin", f"{(total_profit/total_settlement*100 if total_settlement else 0):.1f}%")
 
                     st.divider()
-                    st.subheader("📦 Order Breakdown")
-                    st.dataframe(
-                        final[['sale_order_code', 'seller sku code', 'order_item_status', 'Order_Type', 'Net_Settlement', 'Net_Profit']],
-                        use_container_width=True,
-                        hide_index=True
-                    )
+                    st.subheader("📦 Orders")
+                    st.dataframe(final[['sale_order_code', 'seller sku code', 'Order_Type', 'Net_Settlement', 'Net_Profit']], use_container_width=True)
 
-                    # Excel Export
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        final.to_excel(writer, index=False, sheet_name='Myntra_PL')
-                    st.download_button("📥 Download Full Report", output.getvalue(), "myntra_full_analysis.xlsx")
+                    # DOWNLOAD
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        final.to_excel(writer, index=False)
+                    st.download_button("📥 Download Excel", data=buffer.getvalue(), file_name="myntra_analysis.xlsx")
+                    st.success("Done ✅")
                 else:
-                    st.error("Critical Error: Could not find 'Flow' or 'SKU' files. Please check column headers.")
+                    st.error("Flow / SKU file missing. Check column names.")
             else:
-                st.warning("Please upload at least 3 files (Flow, SKU, and Settlement).")
+                st.warning("Kam se kam 3-4 files upload karein (Flow, SKU, Settlements)")
