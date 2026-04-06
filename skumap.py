@@ -19,7 +19,6 @@ except ImportError:
 # --- 2. CONFIG & DATABASE ---
 st.set_page_config(page_title="Aavoni Seller Suite", layout="wide", page_icon="👗")
 
-# Link your Supabase here via Streamlit Secrets
 try:
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
@@ -74,7 +73,7 @@ def generate_4x6_pdf(df):
     buffer.seek(0)
     return buffer
 
-# --- 4. AUTHENTICATION UI ---
+# --- 4. AUTH & SIDEBAR ---
 if st.session_state.user is None:
     st.title("🚀 Aavoni Seller Suite")
     with st.sidebar:
@@ -89,7 +88,6 @@ if st.session_state.user is None:
                     else:
                         res = supabase.auth.sign_up({"email": e, "password": p})
                         st.info("Signup initiated. Check email or Login if Confirm-Email is OFF.")
-                    
                     if res.session:
                         st.session_state.user = res.user
                         st.rerun()
@@ -99,30 +97,38 @@ else:
     u_id = st.session_state.user.id
     mapping_dict, costing_dict, master_options, profile = load_all_data(u_id)
     
-    # SIDEBAR & STATUS
     with st.sidebar:
         st.header("👗 Aavoni Dashboard")
-        st.write(f"Logged in: **{st.session_state.user.email}**")
-        if profile and profile.get('plan_expiry'):
-            exp_dt = datetime.strptime(profile['plan_expiry'], '%Y-%m-%d').date()
-            days_left = (exp_dt - date.today()).days
-            if days_left >= 0:
-                st.success(f"🎁 Free Trial: {days_left} Days Left")
-            else:
-                st.error("❌ Trial Expired")
+        st.write(f"User: **{st.session_state.user.email}**")
         
+        # --- FREE TRIAL COUNTDOWN ---
+        if profile:
+            exp_str = profile.get('plan_expiry')
+            if exp_str:
+                exp_dt = datetime.strptime(exp_str, '%Y-%m-%d').date()
+                days_left = (exp_dt - date.today()).days
+                if days_left >= 0:
+                    st.success(f"🎁 Free Trial: {days_left} Days Left")
+                else:
+                    st.error("❌ Trial Expired")
+            else:
+                st.warning("🎁 Free Trial: Active")
+        else:
+            st.info("🎁 Free Trial: 7 Days (Syncing...)")
+        
+        st.divider()
         if st.button("Logout"): 
             supabase.auth.sign_out()
             st.session_state.user = None
             st.rerun()
 
-    # TABS SYSTEM
+    # --- TABS SYSTEM ---
     t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
-    # --- TAB 1: PICKLIST ---
+    # --- TAB 1: PICKLIST (With Myntra Priority Fix) ---
     with t1:
         st.header("Order Processing & Picklist")
-        with st.expander("📥 Master Inventory Sync"):
+        with st.expander("📥 Step 1: Master Inventory Sync"):
             m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'], key="m_sync")
             if m_f and st.button("Sync Now"):
                 df_m = pd.read_csv(m_f)
@@ -137,9 +143,17 @@ else:
                 if f.name.endswith('.csv'):
                     df_c = pd.read_csv(f)
                     df_c.columns = [c.lower().strip() for c in df_c.columns]
-                    sku_col = next((c for c in df_c.columns if any(x in c for x in ['sku', 'seller sku code' 'seller_sku'])), None)
+                    
+                    # --- PRIORITY SKU DETECTION ---
+                    sku_col = None
+                    if 'seller sku code' in df_temp.columns: # Myntra Priority
+                        sku_col = 'seller sku code'
+                    else:
+                        sku_col = next((c for c in df_c.columns if any(x in c for x in ['sku', 'seller_sku', 'item sku', 'fsn'])), None)
+                    
                     if sku_col:
-                        for s in df_c[sku_col].dropna(): orders_list.append({'Portal_SKU': str(s).strip().upper(), 'Qty': 1})
+                        for s in df_c[sku_col].dropna(): 
+                            orders_list.append({'Portal_SKU': str(s).strip().upper(), 'Qty': 1})
                 elif f.name.endswith('.pdf'):
                     with pdfplumber.open(f) as pdf:
                         for page in pdf.pages:
@@ -152,17 +166,17 @@ else:
                 df_ord = pd.DataFrame(orders_list)
                 st.info(f"Orders Found: {len(df_ord)}")
                 
-                if st.button("Generate 4x6 Picklist"):
+                if st.button("🖨️ Generate 4x6 Picklist PDF"):
                     df_ord['Master_SKU'] = df_ord['Portal_SKU'].map(mapping_dict)
                     ready = df_ord.dropna(subset=['Master_SKU'])
                     if not ready.empty:
                         summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index()
                         pdf = generate_4x6_pdf(summary)
-                        st.download_button("📥 Download PDF", pdf, "picklist.pdf")
+                        st.download_button("📥 Download PDF", pdf, f"Picklist_{date.today()}.pdf")
                     else:
                         st.error("No SKUs mapped. Map them below first.")
 
-                # Auto-Mapping Tool
+                # Mapping Tool
                 unmapped = [s for s in df_ord['Portal_SKU'].unique() if s not in mapping_dict]
                 if unmapped:
                     st.divider()
@@ -184,7 +198,7 @@ else:
 
     # --- TAB 2: COSTING ---
     with t2:
-        st.header("Costing Manager")
+        st.header("💰 Costing Manager")
         kurti_base = st.number_input("Default Kurti Cost", value=250)
         set_base = st.number_input("Default Set Cost", value=450)
         
@@ -197,7 +211,7 @@ else:
                 st.success("Cost Saved!"); st.rerun()
         st.dataframe(pd.DataFrame(list(costing_dict.items()), columns=['Design', 'Cost']))
 
-    # --- TAB 3: FLIPKART ANALYZER ---
+    # --- TAB 3: FLIPKART ---
     with t3:
         st.header("📊 Flipkart Profitability")
         fk_file = st.file_uploader("Upload Flipkart Orders Excel", type=["xlsx"], key="fk_pnl")
@@ -213,13 +227,13 @@ else:
                     return row[sett_col] - cost
                 
                 df_fk['Profit'] = df_fk.apply(calc_profit, axis=1)
-                st.metric("Total P&L", f"₹{int(df_fk['Profit'].sum()):,}")
+                st.metric("Total Profit", f"₹{int(df_fk['Profit'].sum()):,}")
                 st.dataframe(df_fk[[sku_col, sett_col, 'Profit']])
 
-    # --- TAB 4: MYNTRA ANALYZER ---
+    # --- TAB 4: MYNTRA ---
     with t4:
         st.header("👗 Myntra Smart P&L")
-        m_files = st.file_uploader("Upload Myntra Reports (Flow & Settlements)", type=['csv'], accept_multiple_files=True)
+        m_files = st.file_uploader("Upload Myntra CSVs", type=['csv'], accept_multiple_files=True)
         if len(m_files) >= 2:
             flow_df, sett_list = None, []
             for f in m_files:
