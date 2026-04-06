@@ -27,7 +27,7 @@ except:
 
 if 'user' not in st.session_state: st.session_state.user = None
 
-# --- 3. SHARED UTILS ---
+# --- 3. UTILS ---
 def get_design_pattern(master_sku):
     sku = str(master_sku).upper().strip()
     sku = re.sub(r'[-_](S|M|L|XL|XXL|\d*XL|FREE|SMALL|LARGE)$', '', sku)
@@ -35,25 +35,26 @@ def get_design_pattern(master_sku):
     return sku.strip('-_ ')
 
 def load_all_data(u_id):
-    # Default values taaki crash na ho
+    # Initialize defaults
     m_dict, c_dict, m_list, u_prof = {}, {}, [], None
-    
     try:
-        # Tables fetch karna individually taaki ek fail ho toh baaki chalein
+        # Fetch Mapping
         m_res = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
         m_dict = {item['portal_sku']: item['master_sku'] for item in m_res.data} if m_res.data else {}
         
+        # Fetch Inventory
         i_res = supabase.table("master_inventory").select("master_sku").eq("user_id", u_id).execute()
         m_list = [i['master_sku'].upper() for i in i_res.data] if i_res.data else []
         
+        # Fetch Costing
         c_res = supabase.table("design_costing").select("design_pattern, landed_cost").eq("user_id", u_id).execute()
         c_dict = {item['design_pattern']: item['landed_cost'] for item in c_res.data} if c_res.data else {}
         
+        # Fetch Profile (Trial)
         p_res = supabase.table("profiles").select("*").eq("id", u_id).execute()
         u_prof = p_res.data[0] if p_res.data else None
-    except Exception as e:
-        st.sidebar.warning(f"Data Sync Warning: {e}")
-        
+    except:
+        pass
     return m_dict, c_dict, m_list, u_prof
 
 def generate_4x6_pdf(df):
@@ -71,7 +72,7 @@ def generate_4x6_pdf(df):
     c.save(); buffer.seek(0)
     return buffer
 
-# --- 4. MAIN APP ---
+# --- 4. AUTH ---
 if st.session_state.user is None:
     st.title("🚀 Aavoni Seller Suite")
     with st.sidebar:
@@ -85,12 +86,12 @@ if st.session_state.user is None:
                 except Exception as ex: st.error(f"Error: {ex}")
 else:
     u_id = st.session_state.user.id
+    # CRITICAL: Variable Order Fixed
     mapping_dict, costing_dict, master_options, profile = load_all_data(u_id)
     
     with st.sidebar:
         st.header("👗 Admin Panel")
-        
-        # --- TRIAL LOGIC (SAFE VERSION) ---
+        # TRIAL DISPLAY
         if profile and profile.get('plan_expiry'):
             try:
                 exp = datetime.strptime(str(profile['plan_expiry']), '%Y-%m-%d').date()
@@ -112,16 +113,17 @@ else:
     # --- TAB 1: PICKLIST ---
     with tabs[1]:
         st.header("📦 Order Processing")
-        files = st.file_uploader("Upload Orders", type=["csv"], accept_multiple_files=True, key="pk_tool")
+        files = st.file_uploader("Upload Orders (CSV)", type=["csv"], accept_multiple_files=True, key="pk_fixed")
         if files:
             orders = []
             for f in files:
                 df_c = pd.read_csv(f)
                 df_c.columns = [c.lower().strip() for c in df_c.columns]
-                # Sabse pehle Myntra priority, phir generic SKU
+                # Priority column detection
                 col = 'seller sku code' if 'seller sku code' in df_c.columns else next((c for c in df_c.columns if 'sku' in c and 'myntra' not in c), None)
                 if col:
-                    for s in df_c[col].dropna(): orders.append({'Portal_SKU': str(s).strip().upper(), 'Qty': 1})
+                    for s in df_c[col].dropna(): 
+                        orders.append({'Portal_SKU': str(s).strip().upper(), 'Qty': 1})
             
             if orders:
                 df_o = pd.DataFrame(orders)
@@ -129,14 +131,35 @@ else:
                     df_o['Master_SKU'] = df_o['Portal_SKU'].map(mapping_dict)
                     ready = df_o.dropna(subset=['Master_SKU'])
                     if not ready.empty:
-                        pdf = generate_4x6_pdf(ready.groupby('Master_SKU')['Qty'].sum().reset_index())
-                        st.download_button("Download PDF", pdf, "Aavoni_Picklist.pdf")
-                    else: st.warning("SKUs not mapped! Use Costing/Mapping first.")
+                        pdf_data = generate_4x6_pdf(ready.groupby('Master_SKU')['Qty'].sum().reset_index())
+                        st.download_button("Download PDF", pdf_data, "Aavoni_Picklist.pdf")
+                    else:
+                        st.warning("SKUs not mapped! Please map them in the tool below.")
+
+                # Mapping Tool (If SKUs are missing)
+                unmapped = [s for s in df_o['Portal_SKU'].unique() if s not in mapping_dict]
+                if unmapped:
+                    st.divider()
+                    st.subheader("🔍 New SKU Mapping")
+                    map_rows = []
+                    for s in unmapped:
+                        best, score = "Select", 0
+                        for opt in master_options:
+                            sc = fuzz.token_set_ratio(s, opt)
+                            if sc > score: score, best = sc, opt
+                        map_rows.append({"Confirm": (score > 90), "Portal SKU": s, "Master SKU": best})
+                    
+                    edited = st.data_editor(pd.DataFrame(map_rows), column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)}, hide_index=True)
+                    if st.button("Save Mappings"):
+                        to_db = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in edited.iterrows() if r['Confirm']]
+                        if to_db:
+                            supabase.table("sku_mapping").upsert(to_db, on_conflict="user_id, portal_sku").execute()
+                            st.success("Saved! Re-upload files to see changes."); st.rerun()
 
     # --- TAB 4: MYNTRA ---
     with tabs[4]:
         st.header("Myntra Analyzer 🚀")
-        m_files = st.file_uploader("Upload Reports", type=['csv'], accept_multiple_files=True, key="myntra_tool")
+        m_files = st.file_uploader("Upload Myntra Files", type=['csv'], accept_multiple_files=True, key="myntra_final")
         
         def get_myntra_cost(sku_name):
             sku = str(sku_name).upper()
@@ -146,7 +169,7 @@ else:
             if sku.startswith('HF'): return (hf_base * 2) if 'CBO' in sku else hf_base
             return (std_base * 2) if 'CBO' in sku else std_base
 
-        if st.button("Analyze Myntra"):
+        if st.button("Run Myntra Analysis"):
             if len(m_files) >= 4:
                 f_df, s_df, fwd, rev = None, None, [], []
                 for f in m_files:
@@ -159,6 +182,7 @@ else:
                         else: fwd.append(tdf)
                 
                 if f_df is not None and s_df is not None:
+                    # Final Merge & Profit Logic
                     final = pd.merge(f_df, s_df[['order release id', 'seller sku code']], left_on='sale_order_code', right_on='order release id', how='left')
                     f_sum = pd.concat(fwd).groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if fwd else pd.DataFrame(columns=['order_release_id', 'total_actual_settlement'])
                     r_sum = pd.concat(rev).groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if rev else pd.DataFrame(columns=['order_release_id', 'total_actual_settlement'])
