@@ -1,7 +1,7 @@
 streamlit
 pandas
 gspread
-google-auth
+supabase
 thefuzz
 python-Levenshtein
 openpyxl
