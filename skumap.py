@@ -200,28 +200,63 @@ else:
             except Exception as e: st.error(f"Flipkart Error: {e}")
 
     # --- TAB 4: MYNTRA ---
-    with tabs[4]:
-        st.header("👗 Myntra Smart P&L")
-        m_files = st.file_uploader("Upload Myntra Reports", type=['csv'], accept_multiple_files=True, key="my_pnl_fix")
-        if len(m_files) >= 2:
-            f_df, s_list = None, []
-            for f in m_files:
-                tdf = pd.read_csv(f)
-                tdf.columns = [c.lower().strip().replace(" ", "_") for c in tdf.columns]
-                if 'sale_order_code' in tdf.columns: f_df = tdf
-                if 'total_actual_settlement' in tdf.columns: s_list.append(tdf)
-            if f_df is not None and s_list:
-                s_sum = pd.concat(s_list).groupby('order_release_id')['total_actual_settlement'].sum().reset_index()
-                final = pd.merge(f_df, s_sum, left_on='sale_order_code', right_on='order_release_id', how='left')
-                final['total_actual_settlement'] = pd.to_numeric(final['total_actual_settlement'], errors='coerce').fillna(0)
-                m_sku_col = next((c for c in final.columns if 'seller_sku' in c), None)
-                def calc_myntra(row):
-                    if not m_sku_col: return 0
-                    p_sku = str(row[m_sku_col]).upper()
-                    m_sku = mapping_dict.get(p_sku, p_sku)
-                    pat = get_design_pattern(m_sku)
-                    cost = costing_dict.get(pat, 450 if any(x in m_sku for x in ["SET", "KURTA"]) else 250)
-                    return row['total_actual_settlement'] - cost if row['total_actual_settlement'] > 0 else 0
-                final['Profit'] = final.apply(calc_myntra, axis=1)
-                st.metric("Myntra Net Profit", f"₹{int(final['Profit'].sum()):,}")
-                st.dataframe(final[['sale_order_code', m_sku_col, 'total_actual_settlement', 'Profit']], use_container_width=True)
+with tabs[4]:
+    st.header("👗 Myntra Smart P&L")
+    m_files = st.file_uploader("Upload Myntra Reports", type=['csv'], accept_multiple_files=True, key="my_pnl_final")
+    
+    if len(m_files) >= 2:
+        flow_df, sett_list = None, []
+        for f in m_files:
+            tdf = pd.read_csv(f)
+            # Normalizing column names to avoid KeyErrors
+            tdf.columns = [c.lower().strip().replace(" ", "_") for c in tdf.columns]
+            if 'sale_order_code' in tdf.columns: flow_df = tdf
+            if 'total_actual_settlement' in tdf.columns: sett_list.append(tdf)
+        
+        if flow_df is not None and sett_list:
+            # Settlement Merge Logic
+            s_sum = pd.concat(sett_list).groupby('order_release_id')['total_actual_settlement'].sum().reset_index()
+            final = pd.merge(flow_df, s_sum, left_on='sale_order_code', right_on='order_release_id', how='left')
+            final['total_actual_settlement'] = pd.to_numeric(final['total_actual_settlement'], errors='coerce').fillna(0)
+            
+            # Detect SKU Column
+            m_sku_col = next((c for c in final.columns if 'seller_sku' in c), None)
+
+            # --- AUTOMATIC COSTING LOGIC START ---
+            def get_myntra_cost(row):
+                if not m_sku_col: return 0
+                p_sku = str(row[m_sku_col]).upper()
+                
+                # 1. Check if SKU is mapped to a Master SKU
+                m_sku = mapping_dict.get(p_sku, p_sku)
+                pat = get_design_pattern(m_sku)
+                
+                # 2. Try to fetch from Database (costing_dict)
+                if pat in costing_dict:
+                    return costing_dict[pat]
+                
+                # 3. Fallback to Default Logic (If not in DB)
+                # Agar "SET" ya "KURTA" hai toh 450, warna 250
+                if any(x in m_sku for x in ["SET", "KURTA"]):
+                    return 450 
+                return 250
+            # --- AUTOMATIC COSTING LOGIC END ---
+
+            final['Unit_Cost'] = final.apply(get_myntra_cost, axis=1)
+            
+            # Profit = Settlement - Cost (Sirf settled items ke liye)
+            final['Profit'] = final.apply(
+                lambda x: x['total_actual_settlement'] - x['Unit_Cost'] if x['total_actual_settlement'] > 0 else 0, 
+                axis=1
+            )
+
+            # Top Metric
+            st.metric("Myntra Net Profit", f"₹{int(final['Profit'].sum()):,}")
+            
+            # Display Table
+            display_cols = ['sale_order_code', 'total_actual_settlement', 'Unit_Cost', 'Profit']
+            if m_sku_col: display_cols.insert(1, m_sku_col)
+            
+            st.dataframe(final[display_cols], use_container_width=True, hide_index=True)
+        else:
+            st.warning("Please upload both 'Flow' and 'Settlement' CSV files.")
