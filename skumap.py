@@ -130,111 +130,153 @@ else:
 
     t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
-    # --- TAB 1: PICKLIST ---
-    with t1:
-        st.header("Order Processing & Picklist")
-        with st.expander("📥 Master Inventory Sync"):
-            m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'])
-            if m_f and st.button("Sync Master"):
-                df_m = pd.read_csv(m_f)
-                new_m = [{"user_id": u_id, "master_sku": str(s).upper()} for s in df_m.iloc[:,0].dropna().unique()]
-                supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
-                st.success("Master SKUs Synced!"); st.rerun()
+    # ✅ FIXED & READY SCRIPT (ONLY TAB 1 UPDATED)
 
-        files = st.file_uploader("Upload Orders (Flipkart CSV / Meesho PDF)", type=["csv", "pdf"], accept_multiple_files=True)
-        if files:
-            orders_data = []
-            for f in files:
-                if f.name.endswith('.csv'):
-                    df_c = pd.read_csv(f)
+# --- TAB 1: PICKLIST ---
+with t1:
+    st.header("Order Processing & Picklist")
 
-    # --- CLEAN COLUMN NAMES ---
-    df_c.columns = [c.strip() for c in df_c.columns]
+    with st.expander("📥 Master Inventory Sync"):
+        m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'])
+        if m_f and st.button("Sync Master"):
+            df_m = pd.read_csv(m_f)
+            new_m = [{"user_id": u_id, "master_sku": str(s).upper()} for s in df_m.iloc[:,0].dropna().unique()]
+            supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
+            st.success("Master SKUs Synced!"); st.rerun()
 
-    # --- ✅ PRIORITY: Myntra Seller SKU ---
-    sku_c = None
+    files = st.file_uploader("Upload Orders (Flipkart CSV / Meesho PDF)", type=["csv", "pdf"], accept_multiple_files=True)
 
-    priority_cols = [
-        'seller_sku_code',
-        'seller sku code',
-        'seller_sku',
-        'seller sku'
-    ]
+    if files:
+        orders_data = []
 
-    for p_col in priority_cols:
-        for col in df_c.columns:
-            if col.strip().lower() == p_col:
-                sku_c = col
-                break
-        if sku_c:
-            break
+        for f in files:
 
-    # --- 🟡 FALLBACK ---
-    if sku_c is None:
-        sku_c = next((c for c in df_c.columns if 'sku' in c.lower()), None)
+            if f.name.endswith('.csv'):
+                df_c = pd.read_csv(f)
 
-    if sku_c is None:
-        st.error(f"❌ SKU column not found: {f.name}")
-        continue
+                # --- CLEAN COLUMN NAMES ---
+                df_c.columns = [c.strip() for c in df_c.columns]
 
-    st.write(f"📌 Using SKU Column: {sku_c}")
+                # --- ✅ PRIORITY: Myntra Seller SKU ---
+                sku_c = None
 
-    # --- Qty Logic ---
-    qty_c = next(
-        (c for c in df_c.columns if any(x in c.lower() for x in ['qty', 'quantity', 'units'])),
-        None
-    )
+                priority_cols = [
+                    'seller_sku_code',
+                    'seller sku code',
+                    'seller_sku',
+                    'seller sku'
+                ]
 
-    for _, row in df_c.iterrows():
-        sku_val = str(row[sku_c]).upper().strip()
+                for p_col in priority_cols:
+                    for col in df_c.columns:
+                        if col.strip().lower() == p_col:
+                            sku_c = col
+                            break
+                    if sku_c:
+                        break
 
-        qty_val = 1  # Myntra default
+                # --- 🟡 FALLBACK ---
+                if sku_c is None:
+                    sku_c = next((c for c in df_c.columns if 'sku' in c.lower()), None)
 
-        if qty_c:
-            try:
-                qty_val = int(float(row[qty_c]))
-            except:
-                qty_val = 1
+                if sku_c is None:
+                    st.error(f"❌ SKU column not found: {f.name}")
+                    continue
 
-        orders_data.append({
-            'Portal_SKU': sku_val,
-            'Qty': qty_val
-        })
-                elif f.name.endswith('.pdf'):
-                    with pdfplumber.open(f) as pdf:
-                        for page in pdf.pages:
-                            table = page.extract_table()
-                            if table:
-                                for row in table[1:]:
-                                    if row and row[0]: orders_data.append({'Portal_SKU': str(row[0]).upper(), 'Qty': 1})
-            if orders_data:
-                combined = pd.DataFrame(orders_data)
-                st.success(f"Orders Loaded: {len(combined)}")
-                if st.button("Generate 4x6 Picklist"):
-                    combined['Master_SKU'] = combined['Portal_SKU'].map(mapping_dict)
-                    ready = combined.dropna(subset=['Master_SKU'])
-                    if not ready.empty:
-                        summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index()
-                        pdf = generate_4x6_pdf(summary)
-                        st.download_button("📥 Download PDF", pdf, "picklist.pdf", "application/pdf")
-                
-                st.divider()
-                unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
-                if unmapped:
-                    st.subheader("🔍 New SKU Mapping")
-                    map_rows = []
-                    for s in unmapped:
-                        best, hs = "Select", 0
-                        for opt in master_options:
-                            score = fuzz.token_set_ratio(s.upper(), opt.upper())
-                            if score > hs: hs, best = score, opt
-                        map_rows.append({"Confirm": (hs >= 90), "Portal SKU": s, "Master SKU": best})
-                    edited_map = st.data_editor(pd.DataFrame(map_rows), column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)}, hide_index=True)
-                    if st.button("Save Mappings"):
-                        to_save = edited_map[edited_map['Confirm'] == True]
-                        rows = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in to_save.iterrows()]
-                        supabase.table("sku_mapping").upsert(rows, on_conflict="user_id, portal_sku").execute()
-                        st.success("Saved!"); st.rerun()
+                st.write(f"📌 Using SKU Column: {sku_c}")
+
+                # --- Qty Logic ---
+                qty_c = next(
+                    (c for c in df_c.columns if any(x in c.lower() for x in ['qty', 'quantity', 'units'])),
+                    None
+                )
+
+                for _, row in df_c.iterrows():
+                    sku_val = str(row[sku_c]).upper().strip()
+
+                    qty_val = 1
+
+                    if qty_c:
+                        try:
+                            qty_val = int(float(row[qty_c]))
+                        except:
+                            qty_val = 1
+
+                    orders_data.append({
+                        'Portal_SKU': sku_val,
+                        'Qty': qty_val
+                    })
+
+            elif f.name.endswith('.pdf'):
+                with pdfplumber.open(f) as pdf:
+                    for page in pdf.pages:
+                        table = page.extract_table()
+                        if table:
+                            for row in table[1:]:
+                                if row and row[0]:
+                                    orders_data.append({
+                                        'Portal_SKU': str(row[0]).upper(),
+                                        'Qty': 1
+                                    })
+
+        if orders_data:
+            combined = pd.DataFrame(orders_data)
+            st.success(f"Orders Loaded: {len(combined)}")
+
+            if st.button("Generate 4x6 Picklist"):
+                combined['Master_SKU'] = combined['Portal_SKU'].map(mapping_dict)
+                ready = combined.dropna(subset=['Master_SKU'])
+
+                if not ready.empty:
+                    summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index()
+                    pdf = generate_4x6_pdf(summary)
+
+                    st.download_button(
+                        "📥 Download PDF",
+                        pdf,
+                        "picklist.pdf",
+                        "application/pdf"
+                    )
+
+            st.divider()
+
+            unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
+
+            if unmapped:
+                st.subheader("🔍 New SKU Mapping")
+                map_rows = []
+
+                for s in unmapped:
+                    best, hs = "Select", 0
+
+                    for opt in master_options:
+                        score = fuzz.token_set_ratio(s.upper(), opt.upper())
+                        if score > hs:
+                            hs, best = score, opt
+
+                    map_rows.append({
+                        "Confirm": (hs >= 90),
+                        "Portal SKU": s,
+                        "Master SKU": best
+                    })
+
+                edited_map = st.data_editor(
+                    pd.DataFrame(map_rows),
+                    column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)},
+                    hide_index=True
+                )
+
+                if st.button("Save Mappings"):
+                    to_save = edited_map[edited_map['Confirm'] == True]
+
+                    rows = [
+                        {"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']}
+                        for _, r in to_save.iterrows()
+                    ]
+
+                    supabase.table("sku_mapping").upsert(rows, on_conflict="user_id, portal_sku").execute()
+                    st.success("Saved!")
+                    st.rerun()
 
     # --- TAB 2: COSTING MANAGER ---
     with t2:
