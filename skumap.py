@@ -146,10 +146,60 @@ else:
             orders_data = []
             for f in files:
                 if f.name.endswith('.csv'):
-                    df_c = pd.read_csv(f)
-                    sku_c = next((c for c in df_c.columns if any(x in c.lower() for x in ['sku', 'seller_sku'])), None)
-                    if sku_c:
-                        for s in df_c[sku_c].dropna(): orders_data.append({'Portal_SKU': str(s).upper(), 'Qty': 1})
+    df_c = pd.read_csv(f)
+
+    # --- CLEAN COLUMN NAMES ---
+    df_c.columns = [c.strip() for c in df_c.columns]
+
+    # --- ✅ PRIORITY: Myntra Seller SKU ---
+    sku_c = None
+
+    priority_cols = [
+        'seller_sku_code',
+        'seller sku code',
+        'seller_sku',
+        'seller sku'
+    ]
+
+    for p_col in priority_cols:
+        for col in df_c.columns:
+            if col.strip().lower() == p_col:
+                sku_c = col
+                break
+        if sku_c:
+            break
+
+    # --- 🟡 FALLBACK ---
+    if sku_c is None:
+        sku_c = next((c for c in df_c.columns if 'sku' in c.lower()), None)
+
+    if sku_c is None:
+        st.error(f"❌ SKU column not found: {f.name}")
+        continue
+
+    st.write(f"📌 Using SKU Column: {sku_c}")
+
+    # --- Qty Logic ---
+    qty_c = next(
+        (c for c in df_c.columns if any(x in c.lower() for x in ['qty', 'quantity', 'units'])),
+        None
+    )
+
+    for _, row in df_c.iterrows():
+        sku_val = str(row[sku_c]).upper().strip()
+
+        qty_val = 1  # Myntra default
+
+        if qty_c:
+            try:
+                qty_val = int(float(row[qty_c]))
+            except:
+                qty_val = 1
+
+        orders_data.append({
+            'Portal_SKU': sku_val,
+            'Qty': qty_val
+        })
                 elif f.name.endswith('.pdf'):
                     with pdfplumber.open(f) as pdf:
                         for page in pdf.pages:
