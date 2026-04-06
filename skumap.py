@@ -21,7 +21,7 @@ try:
     url, key = st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
 except:
-    st.error("❌ Supabase Secrets Missing!")
+    st.error("❌ Supabase Secrets Missing! Check Settings > Secrets.")
     st.stop()
 
 if 'user' not in st.session_state: st.session_state.user = None
@@ -95,10 +95,9 @@ else:
 
     t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
-    # --- TAB 1: PICKLIST (FIXED & WORKING) ---
+    # --- TAB 1: PICKLIST ---
     with t1:
         st.header("Order Processing & Picklist")
-        
         with st.expander("📥 Master Inventory Sync"):
             m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'])
             if m_f and st.button("Sync Master"):
@@ -108,13 +107,11 @@ else:
                 st.success("Master SKUs Synced!"); st.rerun()
 
         files = st.file_uploader("Upload Orders (Flipkart CSV / Meesho PDF)", type=["csv", "pdf"], accept_multiple_files=True)
-        
         if files:
             orders_data = []
             for f in files:
                 if f.name.endswith('.csv'):
                     df_c = pd.read_csv(f)
-                    # Common SKU column names for FK/Meesho
                     sku_c = next((c for c in df_c.columns if any(x in c.lower() for x in ['sku', 'seller_sku'])), None)
                     if sku_c:
                         for s in df_c[sku_c].dropna(): orders_data.append({'Portal_SKU': str(s).strip(), 'Qty': 1})
@@ -123,29 +120,23 @@ else:
                         for page in pdf.pages:
                             table = page.extract_table()
                             if table:
-                                # Standard PDF extraction logic
                                 for row in table[1:]:
                                     if row and row[0]: orders_data.append({'Portal_SKU': str(row[0]).strip(), 'Qty': 1})
-            
             if orders_data:
                 combined = pd.DataFrame(orders_data)
-                st.success(f"Total Orders Loaded: {len(combined)}")
-                
+                st.success(f"Orders Loaded: {len(combined)}")
                 if st.button("Generate 4x6 Picklist"):
                     combined['Master_SKU'] = combined['Portal_SKU'].map(mapping_dict)
                     ready = combined.dropna(subset=['Master_SKU'])
                     if not ready.empty:
                         summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index()
                         pdf = generate_4x6_pdf(summary)
-                        st.download_button("📥 Download Picklist PDF", pdf, "picklist.pdf", "application/pdf")
-                    else:
-                        st.warning("No SKUs mapped! Map them below first.")
-
-                # Mapping Section
+                        st.download_button("📥 Download PDF", pdf, "picklist.pdf", "application/pdf")
+                
                 st.divider()
                 unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
                 if unmapped:
-                    st.subheader("🔍 New SKU Mapping Needed")
+                    st.subheader("🔍 New SKU Mapping")
                     map_rows = []
                     for s in unmapped:
                         best, hs = "Select", 0
@@ -153,87 +144,81 @@ else:
                             score = fuzz.token_set_ratio(s.upper(), opt.upper())
                             if score > hs: hs, best = score, opt
                         map_rows.append({"Confirm": (hs >= 90), "Portal SKU": s, "Master SKU": best})
-                    
                     edited_map = st.data_editor(pd.DataFrame(map_rows), column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)}, hide_index=True)
-                    
-                    if st.button("Save New Mappings"):
+                    if st.button("Save Mappings"):
                         to_save = edited_map[edited_map['Confirm'] == True]
-                        if not to_save.empty:
-                            rows = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in to_save.iterrows()]
-                            supabase.table("sku_mapping").upsert(rows, on_conflict="user_id, portal_sku").execute()
-                            st.success("Mappings Saved!"); st.rerun()
+                        rows = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in to_save.iterrows()]
+                        supabase.table("sku_mapping").upsert(rows, on_conflict="user_id, portal_sku").execute()
+                        st.success("Saved!"); st.rerun()
 
     # --- TAB 2: COSTING MANAGER ---
     with t2:
-        st.header("💰 Design-wise Costing Manager")
-        all_master_skus = list(set(mapping_dict.values()))
-        all_designs = sorted(list(set([get_design_pattern(s) for s in all_master_skus])))
+        st.header("💰 Costing Manager")
+        all_master = list(set(mapping_dict.values()))
+        all_designs = sorted(list(set([get_design_pattern(s) for s in all_master])))
         missing = [d for d in all_designs if d not in costing_dict]
-        
-        if missing: st.warning(f"⚠️ {len(missing)} Designs have blank costing.")
-        
-        with st.form("cost_update"):
+        if missing: st.warning(f"⚠️ {len(missing)} Designs have missing costing.")
+        with st.form("cost_up"):
             col1, col2 = st.columns(2)
             sel = col1.selectbox("Select Design", options=missing + [d for d in all_designs if d in costing_dict])
-            cur_cost = costing_dict.get(sel, 0.0)
-            new_v = col2.number_input("Landed Cost (₹)", min_value=0.0, value=float(cur_cost))
+            new_v = col2.number_input("Landed Cost (₹)", min_value=0.0, value=float(costing_dict.get(sel, 0.0)))
             if st.form_submit_button("Save Costing"):
                 supabase.table("design_costing").upsert({"user_id": u_id, "design_pattern": sel, "landed_cost": new_v}, on_conflict="user_id, design_pattern").execute()
                 st.success("Saved!"); st.rerun()
-        
         if costing_dict: st.dataframe(pd.DataFrame(list(costing_dict.items()), columns=['Pattern', 'Cost']), use_container_width=True)
 
-    # --- TAB 3: FLIPKART ANALYZER (SUNIL'S UI) ---
+    # --- TAB 3: FLIPKART ANALYZER ---
     with t3:
         st.title("📊 Aavoni Pro Business Dashboard")
         uploaded_file = st.file_uploader("Upload Flipkart Orders Excel (.xlsx)", type=["xlsx"])
-
         if uploaded_file:
             try:
                 excel_data = pd.ExcelFile(uploaded_file)
                 target_sheet = next((s for s in excel_data.sheet_names if "Orders P&L" in s), excel_data.sheet_names[0])
                 df = pd.read_excel(uploaded_file, sheet_name=target_sheet)
                 df.columns = [str(c).strip() for c in df.columns]
+                sku_col, sett_col = "SKU Name", "Bank Settlement [Projected] (INR)"
+                unit_col, id_col, status_col = "Net Units", "Order ID", "Order Status"
 
-                sku_col, settlement_col = "SKU Name", "Bank Settlement [Projected] (INR)"
-                units_col, order_id_col, status_col = "Net Units", "Order ID", "Order Status"
-
-                if sku_col in df.columns and settlement_col in df.columns:
-                    df[units_col] = pd.to_numeric(df[units_col], errors='coerce').fillna(0).astype(int)
-                    df[settlement_col] = pd.to_numeric(df[settlement_col], errors='coerce').fillna(0)
+                if sku_col in df.columns and sett_col in df.columns:
+                    df[unit_col] = pd.to_numeric(df[unit_col], errors='coerce').fillna(0).astype(int)
+                    df[sett_col] = pd.to_numeric(df[sett_col], errors='coerce').fillna(0)
                     
                     def get_cat_data(sku_name):
                         p_sku = str(sku_name).strip()
                         m_sku = mapping_dict.get(p_sku, p_sku)
-                        pattern = get_design_pattern(m_sku)
-                        if pattern in costing_dict: return "DB Match", costing_dict[pattern]
+                        pat = get_design_pattern(m_sku)
+                        if pat in costing_dict: return "DB Match", costing_dict[pat]
                         sku_up = p_sku.upper()
                         is_hf = sku_up.startswith("HF")
                         base = hf_base if is_hf else std_base
-                        if "3CBO" in sku_up: return "Std 3CBO", (base * 3)
-                        if "CBO" in sku_up: return "Combo", (base * 2)
+                        if "3CBO" in sku_up: return "Combo 3", (base * 3)
+                        if "CBO" in sku_up: return "Combo 2", (base * 2)
                         return ("HF Single" if is_hf else "Std Single"), base
 
-                    results = df[sku_col].apply(get_cat_data)
-                    df['Category'], df['Unit_Cost'] = [x[0] for x in results], [x[1] for x in results]
-                    df['Net_Profit'] = df.apply(lambda x: x[settlement_col] - (x[units_col] * x['Unit_Cost']) if x[units_col] > 0 else x[settlement_col], axis=1)
+                    res = df[sku_col].apply(get_cat_data)
+                    df['Category'], df['Unit_Cost'] = [x[0] for x in res], [x[1] for x in res]
+                    df['Net_Profit'] = df.apply(lambda x: x[sett_col] - (x[unit_col] * x['Unit_Cost']) if x[unit_col] > 0 else x[sett_col], axis=1)
 
                     m1, m2, m3 = st.columns(3)
-                    t_pay, t_prof = df[settlement_col].sum(), df['Net_Profit'].sum()
+                    t_pay, t_prof = df[sett_col].sum(), df['Net_Profit'].sum()
                     m1.metric("Total Settlement", f"₹{int(t_pay):,}")
                     m2.metric("Net Profit", f"₹{int(t_prof):,}", delta=f"{(t_prof/t_pay*100 if t_pay>0 else 0):.1f}% Margin")
-                    m3.metric("Net Units Sold", f"{int(df[units_col].sum()):,}")
+                    m3.metric("Net Units Sold", f"{int(df[unit_col].sum()):,}")
 
                     st.divider()
                     st.subheader("💰 Category Performance")
-                    summary = df.groupby('Category').agg({units_col: 'sum', settlement_col: 'sum', 'Net_Profit': 'sum'})
+                    summary = df.groupby('Category').agg({unit_col: 'sum', sett_col: 'sum', 'Net_Profit': 'sum'})
                     st.table(summary.fillna(0).astype(int))
 
                     st.subheader("🔎 All Orders Breakdown")
-                    final_disp = df[[order_id_col, sku_col, 'Category', status_col, units_col, settlement_col, 'Net_Profit']].copy()
+                    # COSTING FETCHED IN BREAKDOWN
+                    final_disp = df[[id_col, sku_col, 'Category', 'Unit_Cost', status_col, unit_col, sett_col, 'Net_Profit']].copy()
+                    final_disp[sett_col] = final_disp[sett_col].round(0).astype(int)
+                    final_disp['Net_Profit'] = final_disp['Net_Profit'].round(0).astype(int)
+                    final_disp['Unit_Cost'] = final_disp['Unit_Cost'].round(0).astype(int)
                     st.dataframe(final_disp.sort_index(ascending=False), use_container_width=True, hide_index=True)
 
-            except Exception as e:
-                st.error(f"Error: {e}")
+            except Exception as e: st.error(f"Error: {e}")
 
-    with t4: st.info("Myntra Analyzer Tab Active")
+    with t4: st.info("Myntra Analyzer Active")
