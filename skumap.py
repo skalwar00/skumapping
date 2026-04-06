@@ -258,10 +258,10 @@ else:
         st.title("👗 Myntra Smart P&L & Return Analyzer")
 
         uploaded_files = st.file_uploader(
-        "Upload Flow + SKU + Settlement Files",
-        type=['csv'],
-        accept_multiple_files=True
-    )
+            "Upload Flow + SKU + Settlement Files",
+            type=['csv'],
+            accept_multiple_files=True
+        )
 
     def get_final_cost(sku_name):
         sku = str(sku_name).strip()
