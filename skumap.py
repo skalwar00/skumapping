@@ -3,17 +3,17 @@ import pandas as pd
 import re
 import io
 
-# --- CRITICAL IMPORTS WITH MANUAL UNIT DEFINITION ---
+# --- CRITICAL IMPORTS WITH STABILITY FIXES ---
 try:
     from supabase import create_client, Client
     from thefuzz import fuzz
     import pdfplumber
     from reportlab.pdfgen import canvas
-    # Manual definition to avoid ImportErrors
+    # Manual Inch definition for Python 3.11/3.14 compatibility
     INCH = 72 
 except ImportError as e:
     st.error(f"❌ Library Error: {e}")
-    st.info("Please wait for Streamlit to finish installation or check requirements.txt")
+    st.info("Please wait 1-2 minutes for Streamlit to install libraries from requirements.txt")
     st.stop()
 
 # --- PAGE SETUP ---
@@ -25,28 +25,12 @@ try:
     key: str = st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
 except Exception:
-    st.error("❌ Supabase Secrets (URL/KEY) missing in Streamlit Settings!")
+    st.error("❌ Supabase Secrets (URL/KEY) missing in Settings > Secrets!")
     st.stop()
 
 # --- SESSION STATE ---
 if 'user' not in st.session_state:
     st.session_state.user = None
-
-# --- AUTH FUNCTIONS ---
-def login_user(email, password):
-    try:
-        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-        st.session_state.user = res.user
-        st.rerun()
-    except:
-        st.sidebar.error("Invalid Email/Password")
-
-def signup_user(email, password):
-    try:
-        supabase.auth.sign_up({"email": email, "password": password})
-        st.sidebar.success("Account Created! Now Login.")
-    except:
-        st.sidebar.error("Signup Failed")
 
 # --- DATA & CREDIT FUNCTIONS ---
 def get_user_credits(user_id):
@@ -72,24 +56,20 @@ def load_user_db(user_id):
     master_list = [i['master_sku'].upper() for i in i_res.data] if i_res.data else []
     return df_map, sorted(master_list)
 
-# --- PDF GENERATOR (4x6 Inch Manual Scaling) ---
+# --- PDF GENERATOR (4x6 Inch) ---
 def generate_4x6_pdf(df):
     buffer = io.BytesIO()
-    # 4 inches = 4 * 72 points, 6 inches = 6 * 72 points
     w, h = 4 * INCH, 6 * INCH
     c = canvas.Canvas(buffer, pagesize=(w, h))
-    
     c.setFont("Helvetica-Bold", 14)
     c.drawCentredString(w/2, h - 30, "SMART PICKLIST PRO")
     c.line(20, h-40, w-20, h-40)
-    
     y = h - 60
     c.setFont("Helvetica-Bold", 10)
     c.drawString(30, y, "Master SKU")
     c.drawString(w-60, y, "Qty")
     y -= 15
     c.line(20, y+10, w-20, y+10)
-    
     c.setFont("Helvetica", 9)
     for _, row in df.iterrows():
         if y < 40:
@@ -98,12 +78,11 @@ def generate_4x6_pdf(df):
         c.drawString(30, y, str(row['Master_SKU'])[:25])
         c.drawString(w-55, y, str(row['Qty']))
         y -= 15
-        
     c.save()
     buffer.seek(0)
     return buffer
 
-# --- UTILS ---
+# --- EXTRACTION UTILS ---
 def get_sku_size(sku):
     match = re.search(r'\b(\d*XL|L|M|S)\b', str(sku).upper())
     return match.group(1) if match else ""
@@ -139,20 +118,32 @@ def extract_meesho_pdf(pdf_file):
                         s, sz = str(row[sku_idx]).strip(), str(row[size_idx]).strip() if size_idx is not None else ""
                         q = 1
                         if qty_idx is not None:
-                            nums = re.findall(r'\d+', str(row[qty_idx]))
-                            q = int(nums[0]) if nums else 1
+                            n = re.findall(r'\d+', str(row[qty_idx]))
+                            q = int(n[0]) if n else 1
                         data.append({'Portal_SKU': f"{s} {sz}".strip(), 'Qty': q})
     return pd.DataFrame(data)
 
-# --- MAIN UI ---
+# --- LOGIN & DASHBOARD UI ---
 if st.session_state.user is None:
     st.title("🚀 Smart Picklist Pro")
     with st.sidebar:
-        mode = st.radio("Action", ["Login", "Signup"])
-        e = st.text_input("Email")
-        p = st.text_input("Password", type="password")
-        if mode == "Login" and st.button("Login"): login_user(e, p)
-        if mode == "Signup" and st.button("Create Account"): signup_user(e, p)
+        mode = st.radio("Choose Action", ["Login", "Signup"])
+        with st.form("auth_form"):
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
+            if st.form_submit_button("Submit"):
+                if mode == "Login":
+                    try:
+                        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                        if res.user:
+                            st.session_state.user = res.user
+                            st.rerun()
+                    except: st.error("Invalid Login Details")
+                else:
+                    try:
+                        supabase.auth.sign_up({"email": email, "password": password})
+                        st.success("Account Created! Now switch to Login mode.")
+                    except: st.error("Signup Failed")
 else:
     u_id = st.session_state.user.id
     creds = get_user_credits(u_id)
@@ -162,7 +153,7 @@ else:
 
     with st.sidebar.expander("📥 Master Settings"):
         m_f = st.file_uploader("Upload CSV", type=['csv'])
-        if m_f and st.button("Sync"):
+        if m_f and st.button("Sync Master"):
             df_m = pd.read_csv(m_f)
             new_m = [{"user_id": u_id, "master_sku": str(s).upper()} for s in df_m.iloc[:,0].dropna().unique()]
             supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
@@ -170,7 +161,7 @@ else:
 
     st.title("📦 Order Processing")
     mapping_df, master_options = load_user_db(u_id)
-    files = st.file_uploader("Upload Orders", type=["csv", "pdf"], accept_multiple_files=True)
+    files = st.file_uploader("Upload Files (CSV/PDF)", type=["csv", "pdf"], accept_multiple_files=True)
 
     if files:
         orders_list = []
