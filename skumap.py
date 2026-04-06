@@ -237,6 +237,7 @@ else:
                     rev_sum = pd.concat(rev_list).groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if rev_list else pd.DataFrame(columns=['order_release_id','total_actual_settlement'])
                     final = pd.merge(final, fwd_sum, left_on='sale_order_code', right_on='order_release_id', how='left')
                     final = pd.merge(final, rev_sum, left_on='sale_order_code', right_on='order_release_id', how='left', suffixes=('_fwd', '_rev'))
+                    
                     final['Net_Settlement'] = pd.to_numeric(final['total_actual_settlement_fwd'], errors='coerce').fillna(0) + pd.to_numeric(final['total_actual_settlement_rev'], errors='coerce').fillna(0)
                     
                     def get_m_cost(sku_name):
@@ -250,5 +251,19 @@ else:
                     final['Total_Cost'] = final.apply(lambda x: x['Unit_Cost'] if str(x['order_item_status']).strip().lower() == 'delivered' else 0, axis=1)
                     final['Net_Profit'] = final['Net_Settlement'] - final['Total_Cost']
                     
-                    st.metric("Net Profit", f"₹{int(final['Net_Profit'].sum()):,}")
-                    st.dataframe(final[['sale_order_code', 'seller sku code', 'order_item_status', 'Unit_Cost', 'Net_Settlement', 'Net_Profit']], use_container_width=True)
+                    # --- MYNTRA METRICS (SUNIL STYLE) ---
+                    m_c1, m_c2, m_c3, m_c4 = st.columns(4)
+                    m_settle = final['Net_Settlement'].sum()
+                    m_profit = final['Net_Profit'].sum()
+                    m_return_count = len(final[final['Net_Settlement'] < 0])
+                    
+                    m_c1.metric("Net Payout", f"₹{int(m_settle):,}")
+                    m_c2.metric("Net Profit", f"₹{int(m_profit):,}", delta=f"{(m_profit/m_settle*100 if m_settle!=0 else 0):.1f}%")
+                    m_c3.metric("Orders Scanned", len(final))
+                    m_c4.metric("Returns", m_return_count, delta_color="inverse")
+                    
+                    st.divider()
+                    st.subheader("🔎 Myntra Breakdown")
+                    st.dataframe(final[['sale_order_code', 'seller sku code', 'order_item_status', 'Unit_Cost', 'Net_Settlement', 'Net_Profit']].sort_index(ascending=False), use_container_width=True, hide_index=True)
+                else:
+                    st.error("Essential Myntra reports (Flow or SKU) missing.")
