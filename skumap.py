@@ -146,7 +146,7 @@ else:
             orders_data = []
             for f in files:
                 if f.name.endswith('.csv'):
-    df_c = pd.read_csv(f)
+                    df_c = pd.read_csv(f)
 
     # --- CLEAN COLUMN NAMES ---
     df_c.columns = [c.strip() for c in df_c.columns]
