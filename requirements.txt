@@ -9,3 +9,4 @@ cryptography
 reportlab
 xlsxwriter
 pdfplumber
+reportlab
