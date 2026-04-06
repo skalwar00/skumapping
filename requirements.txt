@@ -8,3 +8,4 @@ openpyxl
 cryptography
 reportlab
 xlsxwriter
+pdfplumber
