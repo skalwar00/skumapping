@@ -137,7 +137,7 @@ else:
                 if f.name.endswith('.csv'):
                     df_c = pd.read_csv(f)
                     df_c.columns = [c.lower().strip() for c in df_c.columns]
-                    sku_col = next((c for c in df_c.columns if any(x in c for x in ['sku', 'seller_sku'])), None)
+                    sku_col = next((c for c in df_c.columns if any(x in c for x in ['sku', 'seller sku code' 'seller_sku'])), None)
                     if sku_col:
                         for s in df_c[sku_col].dropna(): orders_list.append({'Portal_SKU': str(s).strip().upper(), 'Qty': 1})
                 elif f.name.endswith('.pdf'):
