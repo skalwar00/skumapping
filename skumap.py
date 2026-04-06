@@ -2,199 +2,237 @@ import streamlit as st
 import pandas as pd
 import re
 import io
-from datetime import datetime, date
 
-# --- 1. LIBRARIES ---
+# --- CRITICAL IMPORTS WITH STABILITY FIXES ---
 try:
     from supabase import create_client, Client
     from thefuzz import fuzz
-    from reportlab.pdfgen import canvas
     import pdfplumber
+    from reportlab.pdfgen import canvas
+    # Manual Inch definition for Python 3.11/3.14 compatibility
     INCH = 72 
-except ImportError:
-    st.error("Missing Libraries! Run: pip install supabase thefuzz reportlab pdfplumber")
+except ImportError as e:
+    st.error(f"❌ Library Error: {e}")
+    st.info("Please wait 1-2 minutes for Streamlit to install libraries from requirements.txt")
     st.stop()
 
-# --- 2. CONFIG & DB ---
-st.set_page_config(page_title="Aavoni Seller Suite", layout="wide", page_icon="👗")
+# --- PAGE SETUP ---
+st.set_page_config(page_title="Smart Picklist Pro", layout="wide")
 
+# --- SUPABASE CONNECTION ---
 try:
-    url, key = st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"]
-    supabase = create_client(url, key)
-except:
-    st.error("Supabase Secrets Missing!")
+    url: str = st.secrets["SUPABASE_URL"]
+    key: str = st.secrets["SUPABASE_KEY"]
+    supabase: Client = create_client(url, key)
+except Exception:
+    st.error("❌ Supabase Secrets (URL/KEY) missing in Settings > Secrets!")
     st.stop()
 
-if 'user' not in st.session_state: st.session_state.user = None
+# --- SESSION STATE ---
+if 'user' not in st.session_state:
+    st.session_state.user = None
 
-# --- 3. UTILS ---
-def get_design_pattern(master_sku):
-    sku = str(master_sku).upper().strip()
-    sku = re.sub(r'[-_](S|M|L|XL|XXL|\d*XL|FREE|SMALL|LARGE)$', '', sku)
-    sku = re.sub(r'\(.*?\)', '', sku)
-    return sku.strip('-_ ')
-
-def load_all_data(u_id):
-    # Initialize defaults
-    m_dict, c_dict, m_list, u_prof = {}, {}, [], None
+# --- DATA & CREDIT FUNCTIONS ---
+def get_user_credits(user_id):
     try:
-        # Fetch Mapping
-        m_res = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
-        m_dict = {item['portal_sku']: item['master_sku'] for item in m_res.data} if m_res.data else {}
-        
-        # Fetch Inventory
-        i_res = supabase.table("master_inventory").select("master_sku").eq("user_id", u_id).execute()
-        m_list = [i['master_sku'].upper() for i in i_res.data] if i_res.data else []
-        
-        # Fetch Costing
-        c_res = supabase.table("design_costing").select("design_pattern, landed_cost").eq("user_id", u_id).execute()
-        c_dict = {item['design_pattern']: item['landed_cost'] for item in c_res.data} if c_res.data else {}
-        
-        # Fetch Profile (Trial)
-        p_res = supabase.table("profiles").select("*").eq("id", u_id).execute()
-        u_prof = p_res.data[0] if p_res.data else None
+        res = supabase.table("profiles").select("credits").eq("id", user_id).single().execute()
+        return res.data['credits'] if res.data else 0
     except:
-        pass
-    return m_dict, c_dict, m_list, u_prof
+        return 0
 
+def deduct_credits(user_id, order_count):
+    needed = (order_count // 4) + (1 if order_count % 4 > 0 else 0)
+    current = get_user_credits(user_id)
+    if current >= needed:
+        new_bal = current - needed
+        supabase.table("profiles").update({"credits": new_bal}).eq("id", user_id).execute()
+        return True, needed
+    return False, needed
+
+def load_user_db(user_id):
+    m_res = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", user_id).execute()
+    i_res = supabase.table("master_inventory").select("master_sku").eq("user_id", user_id).execute()
+    df_map = pd.DataFrame(m_res.data) if m_res.data else pd.DataFrame(columns=['portal_sku', 'master_sku'])
+    master_list = [i['master_sku'].upper() for i in i_res.data] if i_res.data else []
+    return df_map, sorted(master_list)
+
+# --- PDF GENERATOR (4x6 Inch) ---
 def generate_4x6_pdf(df):
     buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=(4*INCH, 6*INCH))
+    w, h = 4 * INCH, 6 * INCH
+    c = canvas.Canvas(buffer, pagesize=(w, h))
     c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(2*INCH, 5.6*INCH, "AAVONI PICKLIST")
-    y = 5.2*INCH
+    c.drawCentredString(w/2, h - 30, "SMART PICKLIST PRO")
+    c.line(20, h-40, w-20, h-40)
+    y = h - 60
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(30, y, "Master SKU")
+    c.drawString(w-60, y, "Qty")
+    y -= 15
+    c.line(20, y+10, w-20, y+10)
+    c.setFont("Helvetica", 9)
     for _, row in df.iterrows():
-        if y < 50: c.showPage(); y = 5.6*INCH
-        c.setFont("Helvetica", 11)
-        c.drawString(30, y, f"{str(row['Master_SKU'])[:22]}")
-        c.drawRightString(4*INCH-30, y, f"Qty: {row['Qty']}")
-        y -= 25
-    c.save(); buffer.seek(0)
+        if y < 40:
+            c.showPage()
+            y = h - 40
+        c.drawString(30, y, str(row['Master_SKU'])[:25])
+        c.drawString(w-55, y, str(row['Qty']))
+        y -= 15
+    c.save()
+    buffer.seek(0)
     return buffer
 
-# --- 4. AUTH ---
+# --- EXTRACTION UTILS ---
+def get_sku_size(sku):
+    match = re.search(r'\b(\d*XL|L|M|S)\b', str(sku).upper())
+    return match.group(1) if match else ""
+
+def clean_sku_for_pattern(sku):
+    sku = str(sku).upper()
+    patterns = [r'\(.*?\)', r'\b\d*XL\b', r'\b[SML]\b', r'[-_]\s*$', r'\s+']
+    for p in patterns: sku = re.sub(p, '', sku)
+    return sku.strip('-_ ')
+
+def extract_meesho_pdf(pdf_file):
+    data = []
+    with pdfplumber.open(pdf_file) as pdf:
+        for page in pdf.pages:
+            tables = page.extract_tables()
+            for table in tables:
+                if not table or len(table) < 2: continue
+                sku_idx = size_idx = qty_idx = None
+                h_idx = -1
+                for i, row in enumerate(table):
+                    r_str = " ".join([str(c).lower() for c in row if c])
+                    if 'sku' in r_str and ('qty' in r_str or 'quantity' in r_str):
+                        for idx, cell in enumerate(row):
+                            c_t = str(cell).lower()
+                            if 'sku' in c_t: sku_idx = idx
+                            if 'size' in c_t: size_idx = idx
+                            if 'qty' in c_t or 'quantity' in c_t: qty_idx = idx
+                        h_idx = i
+                        break
+                if sku_idx is not None:
+                    for row in table[h_idx+1:]:
+                        if not row[sku_idx]: continue
+                        s, sz = str(row[sku_idx]).strip(), str(row[size_idx]).strip() if size_idx is not None else ""
+                        q = 1
+                        if qty_idx is not None:
+                            n = re.findall(r'\d+', str(row[qty_idx]))
+                            q = int(n[0]) if n else 1
+                        data.append({'Portal_SKU': f"{s} {sz}".strip(), 'Qty': q})
+    return pd.DataFrame(data)
+
+# --- LOGIN & DASHBOARD UI ---
 if st.session_state.user is None:
-    st.title("🚀 Aavoni Seller Suite")
+    st.title("🚀 Smart Picklist Pro")
     with st.sidebar:
-        mode = st.radio("Mode", ["Login", "Signup"])
-        with st.form("auth"):
-            e, p = st.text_input("Email"), st.text_input("Password", type="password")
+        mode = st.radio("Choose Action", ["Login", "Signup"])
+        with st.form("auth_form"):
+            email = st.text_input("Email")
+            password = st.text_input("Password", type="password")
             if st.form_submit_button("Submit"):
-                try:
-                    res = (supabase.auth.sign_in_with_password if mode=="Login" else supabase.auth.sign_up)({"email":e, "password":p})
-                    if res.session: st.session_state.user = res.user; st.rerun()
-                except Exception as ex: st.error(f"Error: {ex}")
+                if mode == "Login":
+                    try:
+                        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                        if res.user:
+                            st.session_state.user = res.user
+                            st.rerun()
+                    except: st.error("Invalid Login Details")
+                else:
+                    try:
+                        supabase.auth.sign_up({"email": email, "password": password})
+                        st.success("Account Created! Now switch to Login mode.")
+                    except: st.error("Signup Failed")
 else:
     u_id = st.session_state.user.id
-    # CRITICAL: Variable Order Fixed
-    mapping_dict, costing_dict, master_options, profile = load_all_data(u_id)
-    
-    with st.sidebar:
-        st.header("👗 Admin Panel")
-        # TRIAL DISPLAY
-        if profile and profile.get('plan_expiry'):
-            try:
-                exp = datetime.strptime(str(profile['plan_expiry']), '%Y-%m-%d').date()
-                days = (exp - date.today()).days
-                if days >= 0: st.success(f"🎁 Trial: {days} Days Left")
-                else: st.error("❌ Trial Expired")
-            except: st.info("🎁 Plan: Active")
-        else:
-            st.info("🎁 Free Trial: Active")
-        
-        st.divider()
-        std_base = st.number_input("Std Pant Cost", value=165)
-        hf_base = st.number_input("HF Series Cost", value=115)
-        if st.button("Logout"): 
-            supabase.auth.sign_out(); st.session_state.user = None; st.rerun()
+    creds = get_user_credits(u_id)
+    st.sidebar.metric("Available Credits", creds)
+    if st.sidebar.button("Logout"):
+        supabase.auth.sign_out(); st.session_state.user = None; st.rerun()
 
-    tabs = st.tabs(["🏠 Home", "📦 Picklist", "💰 Costing", "📊 Flipkart P&L", "👗 Myntra P&L"])
+    with st.sidebar.expander("📥 Master Settings"):
+        m_f = st.file_uploader("Upload CSV", type=['csv'])
+        if m_f and st.button("Sync Master"):
+            df_m = pd.read_csv(m_f)
+            new_m = [{"user_id": u_id, "master_sku": str(s).upper()} for s in df_m.iloc[:,0].dropna().unique()]
+            supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
+            st.success("Synced!"); st.rerun()
 
-    # --- TAB 1: PICKLIST ---
-    with tabs[1]:
-        st.header("📦 Order Processing")
-        files = st.file_uploader("Upload Orders (CSV)", type=["csv"], accept_multiple_files=True, key="pk_fixed")
-        if files:
-            orders = []
-            for f in files:
+    st.title("📦 Order Processing")
+    mapping_df, master_options = load_user_db(u_id)
+    files = st.file_uploader("Upload Files (CSV/PDF)", type=["csv", "pdf"], accept_multiple_files=True)
+
+    if files:
+        orders_list = []
+        for f in files:
+            if f.name.endswith('.pdf'):
+                df_p = extract_meesho_pdf(f)
+                if not df_p.empty: orders_list.append(df_p)
+            else:
                 df_c = pd.read_csv(f)
-                df_c.columns = [c.lower().strip() for c in df_c.columns]
-                # Priority column detection
-                col = 'seller sku code' if 'seller sku code' in df_c.columns else next((c for c in df_c.columns if 'sku' in c and 'myntra' not in c), None)
-                if col:
-                    for s in df_c[col].dropna(): 
-                        orders.append({'Portal_SKU': str(s).strip().upper(), 'Qty': 1})
-            
-            if orders:
-                df_o = pd.DataFrame(orders)
-                if st.button("Generate Picklist"):
-                    df_o['Master_SKU'] = df_o['Portal_SKU'].map(mapping_dict)
-                    ready = df_o.dropna(subset=['Master_SKU'])
+                c_map = {str(c).lower().strip().replace(" ", "_"): c for c in df_c.columns}
+                s_c = next((c_map[k] for k in ['sku', 'seller_sku', 'seller_sku_code'] if k in c_map), None)
+                q_c = next((c_map[k] for k in ['quantity', 'qty', 'total_quantity'] if k in c_map), None)
+                if s_c:
+                    q_d = pd.to_numeric(df_c[q_c], errors='coerce').fillna(1) if q_c else 1
+                    orders_list.append(pd.DataFrame({'Portal_SKU': df_c[s_c].astype(str).str.strip(), 'Qty': q_d}))
+
+        if orders_list:
+            combined = pd.concat(orders_list, ignore_index=True)
+            if st.button("Generate Picklist"):
+                ok, cost = deduct_credits(u_id, len(combined))
+                if ok:
+                    m_d = dict(zip(mapping_df['portal_sku'].astype(str), mapping_df['master_sku'].astype(str)))
+                    combined['Master_SKU'] = combined['Portal_SKU'].map(m_d)
+                    ready = combined.dropna(subset=['Master_SKU'])
                     if not ready.empty:
-                        pdf_data = generate_4x6_pdf(ready.groupby('Master_SKU')['Qty'].sum().reset_index())
-                        st.download_button("Download PDF", pdf_data, "Aavoni_Picklist.pdf")
-                    else:
-                        st.warning("SKUs not mapped! Please map them in the tool below.")
+                        st.success(f"Deducted {cost} credits.")
+                        summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index().sort_values('Qty', ascending=False)
+                        st.dataframe(summary, use_container_width=True)
+                        pdf_file = generate_4x6_pdf(summary)
+                        st.download_button("📥 Download 4x6 Picklist", pdf_file, "picklist.pdf", "application/pdf")
+                    else: st.warning("No mappings found.")
+                else: st.error(f"Need {cost} credits.")
 
-                # Mapping Tool (If SKUs are missing)
-                unmapped = [s for s in df_o['Portal_SKU'].unique() if s not in mapping_dict]
-                if unmapped:
-                    st.divider()
-                    st.subheader("🔍 New SKU Mapping")
-                    map_rows = []
+            st.divider()
+            m_d = dict(zip(mapping_df['portal_sku'].astype(str), mapping_df['master_sku'].astype(str)))
+            unmapped = [s for s in combined['Portal_SKU'].unique() if str(s) not in m_d]
+            if unmapped:
+                st.subheader("🔍 Review & Map")
+                if 'temp_res' not in st.session_state:
+                    res = []
                     for s in unmapped:
-                        best, score = "Select", 0
+                        best, hs = "Select Manually", 0
                         for opt in master_options:
-                            sc = fuzz.token_set_ratio(s, opt)
-                            if sc > score: score, best = sc, opt
-                        map_rows.append({"Confirm": (score > 90), "Portal SKU": s, "Master SKU": best})
-                    
-                    edited = st.data_editor(pd.DataFrame(map_rows), column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)}, hide_index=True)
+                            score = fuzz.token_set_ratio(str(s).upper(), str(opt).upper())
+                            if score > hs: hs, best = score, opt
+                        res.append({"Confirm": (hs >= 90), "Portal SKU": s, "Master SKU": best, "Match %": f"{hs}%"})
+                    st.session_state.temp_res = pd.DataFrame(res)
+
+                edited = st.data_editor(st.session_state.temp_res, column_config={
+                    "Master SKU": st.column_config.SelectboxColumn(options=master_options),
+                    "Match %": st.column_config.TextColumn(disabled=True)
+                }, hide_index=True)
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    if st.button("Apply Pattern (Size-to-Size)"):
+                        new_t, learn = edited.copy(), {}
+                        for i, r in edited.iterrows():
+                            if r['Master SKU'] != st.session_state.temp_res.iloc[i]['Master SKU']:
+                                learn[clean_sku_for_pattern(r['Portal SKU'])] = clean_sku_for_pattern(r['Master SKU'])
+                        for i, r in new_t.iterrows():
+                            pb = clean_sku_for_pattern(r['Portal SKU'])
+                            if pb in learn:
+                                sz = get_sku_size(r['Portal SKU'])
+                                nv = f"{learn[pb]}-{sz}" if sz else learn[pb]
+                                if nv in master_options: new_t.at[i, 'Master SKU'], new_t.at[i, 'Confirm'] = nv, True
+                        st.session_state.temp_res = new_t; st.rerun()
+                with c2:
                     if st.button("Save Mappings"):
-                        to_db = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in edited.iterrows() if r['Confirm']]
-                        if to_db:
-                            supabase.table("sku_mapping").upsert(to_db, on_conflict="user_id, portal_sku").execute()
-                            st.success("Saved! Re-upload files to see changes."); st.rerun()
-
-    # --- TAB 4: MYNTRA ---
-    with tabs[4]:
-        st.header("Myntra Analyzer 🚀")
-        m_files = st.file_uploader("Upload Myntra Files", type=['csv'], accept_multiple_files=True, key="myntra_final")
-        
-        def get_myntra_cost(sku_name):
-            sku = str(sku_name).upper()
-            m_sku = mapping_dict.get(sku, sku)
-            pat = get_design_pattern(m_sku)
-            if pat in costing_dict: return costing_dict[pat]
-            if sku.startswith('HF'): return (hf_base * 2) if 'CBO' in sku else hf_base
-            return (std_base * 2) if 'CBO' in sku else std_base
-
-        if st.button("Run Myntra Analysis"):
-            if len(m_files) >= 4:
-                f_df, s_df, fwd, rev = None, None, [], []
-                for f in m_files:
-                    tdf = pd.read_csv(f); tdf.columns = [c.strip().lower() for c in tdf.columns]
-                    if 'sale_order_code' in tdf.columns: f_df = tdf
-                    elif 'seller sku code' in tdf.columns and 'total_actual_settlement' not in tdf.columns: s_df = tdf
-                    elif 'total_actual_settlement' in tdf.columns:
-                        v = pd.to_numeric(tdf['total_actual_settlement'], errors='coerce').mean()
-                        if 'reverse' in f.name.lower() or v < 0: rev.append(tdf)
-                        else: fwd.append(tdf)
-                
-                if f_df is not None and s_df is not None:
-                    # Final Merge & Profit Logic
-                    final = pd.merge(f_df, s_df[['order release id', 'seller sku code']], left_on='sale_order_code', right_on='order release id', how='left')
-                    f_sum = pd.concat(fwd).groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if fwd else pd.DataFrame(columns=['order_release_id', 'total_actual_settlement'])
-                    r_sum = pd.concat(rev).groupby('order_release_id')['total_actual_settlement'].sum().reset_index() if rev else pd.DataFrame(columns=['order_release_id', 'total_actual_settlement'])
-                    
-                    final = pd.merge(final, f_sum, left_on='sale_order_code', right_on='order_release_id', how='left').rename(columns={'total_actual_settlement': 'Fwd'})
-                    final = pd.merge(final, r_sum, left_on='sale_order_code', right_on='order_release_id', how='left').rename(columns={'total_actual_settlement': 'Rev'})
-                    final[['Fwd', 'Rev']] = final[['Fwd', 'Rev']].fillna(0)
-                    final['Net_Settlement'] = final['Fwd'] + final['Rev']
-                    final['seller sku code'] = final['seller sku code'].fillna("UNKNOWN")
-                    final['Unit_Cost'] = final['seller sku code'].apply(get_myntra_cost)
-                    final['Total_Cost'] = final.apply(lambda x: x['Unit_Cost'] if str(x['order_item_status']).strip().lower() == 'delivered' else 0, axis=1)
-                    final['Profit'] = final['Net_Settlement'] - final['Total_Cost']
-                    
-                    st.metric("Net Profit", f"₹{int(final['Profit'].sum()):,}")
-                    st.dataframe(final[['sale_order_code', 'seller sku code', 'order_item_status', 'Net_Settlement', 'Profit']], use_container_width=True)
+                        to_s = edited[edited['Confirm'] == True]
+                        if not to_s.empty:
+                            rows = [{"user_id": u_id, "portal_sku": str(r['Portal SKU']), "master_sku": str(r['Master SKU'])} for _, r in to_s.iterrows()]
+                            supabase.table("sku_mapping").upsert(rows, on_conflict="user_id, portal_sku").execute()
+                            st.success("Saved!"); del st.session_state.temp_res; st.rerun()
