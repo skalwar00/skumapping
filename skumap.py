@@ -127,8 +127,8 @@ else:
         st.divider()
         if st.button("Logout"): 
             supabase.auth.sign_out(); st.session_state.user = None; st.rerun()
-
-    t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
+            
+t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
     # ✅ FIXED & READY SCRIPT (ONLY TAB 1 UPDATED)
 
