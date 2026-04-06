@@ -119,18 +119,24 @@ else:
 
     # --- ORIGINAL APP CONTINUES ---
     mapping_dict, costing_dict, master_options = load_all_data(u_id)
-    
+
     with st.sidebar:
         st.header("📊 Product Costing")
         std_base = st.number_input("Standard Pant Cost (PT/PL)", value=165)
         hf_base = st.number_input("HF Series Cost", value=110)
         st.divider()
         if st.button("Logout"): 
-            supabase.auth.sign_out(); st.session_state.user = None; st.rerun()
-            
-t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
+            supabase.auth.sign_out()
+            st.session_state.user = None
+            st.rerun()
 
-    # ✅ FIXED & READY SCRIPT (ONLY TAB 1 UPDATED)
+    # ✅ TABS MUST BE INSIDE THIS BLOCK
+    t1, t2, t3, t4 = st.tabs([
+        "📦 Picklist",
+        "💰 Costing Manager",
+        "📊 Flipkart Profit",
+        "👗 Myntra Profit"
+    ])
 
 # --- TAB 1: PICKLIST ---
 with t1:
