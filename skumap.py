@@ -99,7 +99,7 @@ def login_signup_ui():
 
                     if res.user:
                         st.session_state.user = res.user
-                        st.experimental_rerun()
+                        st.rerun()
                     else:
                         st.error("❌ Authentication Failed")
                 except Exception as ex:
@@ -138,7 +138,7 @@ else:
         if st.button("Logout"):
             supabase.auth.sign_out()
             st.session_state.user = None
-            st.experimental_rerun()
+            st.rerun()
 
 # --- YOUR EXISTING TABS LOGIC CONTINUES BELOW ---
 
