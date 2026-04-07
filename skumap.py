@@ -85,7 +85,7 @@ def get_user_plan(u_id):
 
 # --- 4. AUTH & MAIN UI ---
 if st.session_state.user is None:
-    st.title("🚀 Aavoni Seller Suite")
+    st.title("🚀 ECOM Seller Suite")
     with st.sidebar:
         mode = st.radio("Action", ["Login", "Signup"])
         with st.form("auth"):
@@ -210,7 +210,7 @@ else:
 
     # --- TAB 3: FLIPKART ANALYZER ---
     with t3:
-        st.title("📊 Aavoni Pro Business Dashboard")
+        st.title("📊 FLIPKART ANALYZER")
         uploaded_file = st.file_uploader("Upload Flipkart Orders Excel (.xlsx)", type=["xlsx"])
         if uploaded_file:
             try:
