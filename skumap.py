@@ -89,32 +89,50 @@ def login_signup_ui():
     with st.sidebar:
         mode = st.radio("Action", ["Login", "Signup"])
         with st.form("auth"):
-            e, p = st.text_input("Email"), st.text_input("Password", type="password")
+            e = st.text_input("Email").strip()
+            p = st.text_input("Password", type="password")
             if st.form_submit_button("Submit"):
                 try:
-                    if mode == "Login":
-                        res = supabase.auth.sign_in_with_password({"email": e, "password": p})
-                    else:
+                    if mode == "Signup":
+                        # 1. User create karein
                         res = supabase.auth.sign_up({"email": e, "password": p})
-                        # ✅ Signup ke baad default trial plan insert
+                        
                         if res.user:
-                            from datetime import datetime, timedelta
+                            # 2. Trial Plan insert karein
+                            from datetime import datetime, timedelta, timezone
+                            trial_expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+                            
                             trial_plan = {
                                 "user_id": res.user.id,
                                 "plan_type": "trial",
-                                "expiry_date": (datetime.utcnow() + timedelta(days=7)).isoformat()
+                                "expiry_date": trial_expiry
                             }
-                            plan_res = supabase.table("users_plan").insert(trial_plan).execute()
-                            if plan_res.error:
-                                st.error(f"❌ Plan insert failed: {plan_res.error.message}")
+                            
+                            # Yahan insert ke baad data return nahi hota, isliye sirf execute()
+                            try:
+                                supabase.table("users_plan").insert(trial_plan).execute()
+                            except Exception as plan_err:
+                                st.warning(f"Note: User created but plan table error: {plan_err}")
 
-                    if res.user:
-                        st.session_state.user = res.user
-                        st.rerun()
-                    else:
-                        st.error("❌ Authentication Failed")
+                            # 3. Session set karke refresh
+                            st.session_state.user = res.user
+                            st.rerun()
+                        else:
+                            st.error("❌ Signup failed. Try a different email.")
+
+                    else: # LOGIN MODE
+                        res = supabase.auth.sign_in_with_password({"email": e, "password": p})
+                        if res.user:
+                            st.session_state.user = res.user
+                            st.rerun()
+                        else:
+                            st.error("❌ Invalid Login Credentials")
+
                 except Exception as ex:
-                    st.error(f"❌ Error: {ex}")
+                    st.error(f"⚠️ System Error: {ex}")
+                    # Debugging ke liye full error expander
+                    with st.expander("Show Technical Details"):
+                        st.exception(ex)
 
 if st.session_state.user is None:
     login_signup_ui()
