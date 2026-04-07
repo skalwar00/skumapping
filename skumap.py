@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import re
 import io
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # --- 1. CRITICAL IMPORTS ---
 try:
@@ -18,16 +18,23 @@ except ImportError:
 # --- 2. CONFIG & DATABASE ---
 st.set_page_config(page_title="Aavoni Seller Suite", layout="wide", page_icon="📊")
 
-try:
-    url, key = st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(url, key)
-except:
+# --- SECRETS CHECK ---
+if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
     st.error("❌ Supabase Secrets Missing! Check Settings > Secrets.")
     st.stop()
 
-if 'user' not in st.session_state: st.session_state.user = None
+try:
+    url = st.secrets["SUPABASE_URL"].strip()
+    key = st.secrets["SUPABASE_KEY"].strip()
+    supabase: Client = create_client(url, key)
+except Exception as e:
+    st.error(f"❌ Connection Error: {e}")
+    st.stop()
 
-# --- 3. SHARED UTILS ---
+if 'user' not in st.session_state: 
+    st.session_state.user = None
+
+# --- 3. SHARED UTILS (New Versions) ---
 def get_design_pattern(master_sku):
     sku = str(master_sku).upper().strip()
     sku = re.sub(r'[-_](S|M|L|XL|XXL|\d*XL|FREE|SMALL|LARGE)$', '', sku)
@@ -36,54 +43,26 @@ def get_design_pattern(master_sku):
 
 @st.cache_data(ttl=300)
 def load_all_data(u_id):
-    m_res = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
-    i_res = supabase.table("master_inventory").select("master_sku").eq("user_id", u_id).execute()
-    c_res = supabase.table("design_costing").select("design_pattern, landed_cost").eq("user_id", u_id).execute()
-    
-    m_dict = {item['portal_sku'].upper(): item['master_sku'] for item in m_res.data} if m_res.data else {}
-    c_dict = {item['design_pattern']: item['landed_cost'] for item in c_res.data} if c_res.data else {}
-    m_list = [i['master_sku'].upper() for i in i_res.data] if i_res.data else []
-    
-    return m_dict, c_dict, m_list
+    try:
+        m_res = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
+        i_res = supabase.table("master_inventory").select("master_sku").eq("user_id", u_id).execute()
+        c_res = supabase.table("design_costing").select("design_pattern, landed_cost").eq("user_id", u_id).execute()
+        
+        m_dict = {item['portal_sku'].upper(): item['master_sku'] for item in m_res.data} if m_res.data else {}
+        c_dict = {item['design_pattern']: item['landed_cost'] for item in c_res.data} if c_res.data else {}
+        m_list = [i['master_sku'].upper() for i in i_res.data] if i_res.data else []
+        
+        return m_dict, c_dict, m_list
+    except:
+        return {}, {}, []
 
-def generate_4x6_pdf(df):
-    buffer = io.BytesIO()
-    w, h = 4 * INCH, 6 * INCH
-    c = canvas.Canvas(buffer, pagesize=(w, h))
-    c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(w/2, h - 30, "AAVONI PICKLIST")
-    c.line(20, h-40, w-20, h-40)
-    y = h - 60
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(30, y, "Master SKU")
-    c.drawString(w-60, y, "Qty")
-    y -= 15
-    c.line(20, y+10, w-20, y+10)
-    c.setFont("Helvetica", 9)
-
-    df = df.sort_values(by="Master_SKU")
-
-    for _, row in df.iterrows():
-        if y < 40:
-            c.showPage()
-            y = h - 40
-        c.drawString(30, y, str(row['Master_SKU'])[:25])
-        c.drawString(w-55, y, str(row['Qty']))
-        y -= 15
-    c.save()
-    buffer.seek(0)
-    return buffer
-
-# --- PLAN SYSTEM ---
 def get_user_plan(u_id):
     try:
         res = supabase.table("users_plan").select("*").eq("user_id", u_id).execute()
         return res.data[0] if res.data else None
     except Exception as e:
-        st.sidebar.error(f"Plan Error: {e}")
         return None
 
-# --- 4. AUTH & MAIN UI ---
 def login_signup_ui():
     st.title("🚀 Aavoni Seller Suite")
     with st.sidebar:
@@ -92,48 +71,32 @@ def login_signup_ui():
             e = st.text_input("Email").strip()
             p = st.text_input("Password", type="password")
             if st.form_submit_button("Submit"):
+                if not e or len(p) < 6:
+                    st.error("Enter valid email and password (min 6 chars)")
+                    return
                 try:
+                    credentials = {"email": e, "password": p}
                     if mode == "Signup":
-                        # 1. User create karein
-                        res = supabase.auth.sign_up({"email": e, "password": p})
-                        
+                        res = supabase.auth.sign_up(credentials)
                         if res.user:
-                            # 2. Trial Plan insert karein
-                            from datetime import datetime, timedelta, timezone
                             trial_expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
-                            
-                            trial_plan = {
+                            supabase.table("users_plan").upsert({
                                 "user_id": res.user.id,
                                 "plan_type": "trial",
                                 "expiry_date": trial_expiry
-                            }
-                            
-                            # Yahan insert ke baad data return nahi hota, isliye sirf execute()
-                            try:
-                                supabase.table("users_plan").insert(trial_plan).execute()
-                            except Exception as plan_err:
-                                st.warning(f"Note: User created but plan table error: {plan_err}")
-
-                            # 3. Session set karke refresh
+                            }).execute()
                             st.session_state.user = res.user
                             st.rerun()
-                        else:
-                            st.error("❌ Signup failed. Try a different email.")
-
-                    else: # LOGIN MODE
-                        res = supabase.auth.sign_in_with_password({"email": e, "password": p})
+                    else:
+                        res = supabase.auth.sign_in_with_password(credentials)
                         if res.user:
                             st.session_state.user = res.user
                             st.rerun()
-                        else:
-                            st.error("❌ Invalid Login Credentials")
-
+                        else: st.error("Invalid Login")
                 except Exception as ex:
-                    st.error(f"⚠️ System Error: {ex}")
-                    # Debugging ke liye full error expander
-                    with st.expander("Show Technical Details"):
-                        st.exception(ex)
+                    st.error(f"❌ Auth Error: {ex}")
 
+# --- 4. MAIN EXECUTION ---
 if st.session_state.user is None:
     login_signup_ui()
 else:
@@ -141,33 +104,35 @@ else:
     plan_data = get_user_plan(u_id)
 
     if plan_data:
-        expiry = datetime.fromisoformat(plan_data['expiry_date'].replace("Z", ""))
-        now = datetime.utcnow()
+        # Timezone fix for Python 3.12
+        expiry_str = plan_data['expiry_date'].replace("Z", "+00:00")
+        expiry = datetime.fromisoformat(expiry_str)
+        now = datetime.now(timezone.utc)
+        
         remaining = expiry - now
-        days_left = int(remaining.total_seconds() / 86400)
+        days_left = remaining.days
 
-        if days_left > 0:
-            st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
-            st.sidebar.info(f"Ends on: {expiry.date()}")
+        if days_left >= 0:
+            st.sidebar.success(f"🟢 Trial Active: {max(0, days_left)} days left")
         else:
-            st.sidebar.error("🔴 Trial Expired - Upgrade Required")
+            st.sidebar.error("🔴 Trial Expired")
+            if st.sidebar.button("Logout"):
+                st.session_state.user = None
+                st.rerun()
             st.stop()
     else:
-        st.sidebar.error("❌ No Plan Found for this user")
+        st.sidebar.error("❌ No Plan Found")
         st.stop()
 
-    # --- CONTINUE WITH YOUR EXISTING APP LOGIC ---
     mapping_dict, costing_dict, master_options = load_all_data(u_id)
-
+    
     with st.sidebar:
-        st.header("📊 Product Costing")
-        std_base = st.number_input("Standard Pant Cost (PT/PL)", value=165)
-        hf_base = st.number_input("HF Series Cost", value=110)
-        st.divider()
         if st.button("Logout"):
             supabase.auth.sign_out()
             st.session_state.user = None
             st.rerun()
+
+    # --- AB YAHAN SE AAPKE PURANE TABS START HONGE ---
 
 # --- YOUR EXISTING TABS LOGIC CONTINUES BELOW ---
 
