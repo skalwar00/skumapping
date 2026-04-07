@@ -95,7 +95,7 @@ def login_signup_ui():
                 try:
                     if mode == "Signup":
                         # 1. User create karein
-                        res = supabase.auth.sign_up(email=e, password=p)
+                        res = supabase.auth.sign_up({"email": e, "password": p})
                         
                         if res.user:
                             # 2. Trial Plan insert karein
@@ -121,7 +121,7 @@ def login_signup_ui():
                             st.error("❌ Signup failed. Try a different email.")
 
                     else: # LOGIN MODE
-                        res = supabase.auth.sign_in_with_password(email=e, password=p)
+                        res = supabase.auth.sign_in_with_password({"email": e, "password": p})
                         if res.user:
                             st.session_state.user = res.user
                             st.rerun()
