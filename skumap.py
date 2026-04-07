@@ -2,15 +2,20 @@ import streamlit as st
 import pandas as pd
 import re
 import io
-from datetime import datetime
-from supabase import create_client, Client
-from thefuzz import fuzz
-import pdfplumber
-from reportlab.pdfgen import canvas
+from datetime import datetime, timedelta
 
-INCH = 72
+# --- 1. CRITICAL IMPORTS ---
+try:
+    from supabase import create_client, Client
+    from thefuzz import fuzz
+    import pdfplumber
+    from reportlab.pdfgen import canvas
+    INCH = 72
+except ImportError:
+    st.error("❌ Libraries are installing... Please wait.")
+    st.stop()
 
-# --- 1. CONFIG & DATABASE ---
+# --- 2. CONFIG & DATABASE ---
 st.set_page_config(page_title="Aavoni Seller Suite", layout="wide", page_icon="📊")
 
 try:
@@ -20,8 +25,8 @@ except:
     st.error("❌ Supabase Secrets Missing! Check Settings > Secrets.")
     st.stop()
 
-# --- 2. SESSION ---
-if 'user' not in st.session_state: st.session_state.user = None
+if 'user' not in st.session_state:
+    st.session_state.user = None
 
 # --- 3. UTILS ---
 def get_design_pattern(master_sku):
@@ -30,17 +35,17 @@ def get_design_pattern(master_sku):
     sku = re.sub(r'\(.*?\)', '', sku)
     return sku.strip('-_ ')
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300)
 def load_all_data(u_id):
     m_res = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
     i_res = supabase.table("master_inventory").select("master_sku").eq("user_id", u_id).execute()
     c_res = supabase.table("design_costing").select("design_pattern, landed_cost").eq("user_id", u_id).execute()
 
-    mapping_dict = {item['portal_sku'].upper(): item['master_sku'] for item in m_res.data} if m_res.data else {}
-    costing_dict = {item['design_pattern']: item['landed_cost'] for item in c_res.data} if c_res.data else {}
-    master_options = [i['master_sku'].upper() for i in i_res.data] if i_res.data else []
+    m_dict = {item['portal_sku'].upper(): item['master_sku'] for item in m_res.data} if m_res.data else {}
+    c_dict = {item['design_pattern']: item['landed_cost'] for item in c_res.data} if c_res.data else {}
+    m_list = [i['master_sku'].upper() for i in i_res.data] if i_res.data else []
 
-    return mapping_dict, costing_dict, master_options
+    return m_dict, c_dict, m_list
 
 def generate_4x6_pdf(df):
     buffer = io.BytesIO()
@@ -58,6 +63,7 @@ def generate_4x6_pdf(df):
     c.setFont("Helvetica", 9)
 
     df = df.sort_values(by="Master_SKU")
+
     for _, row in df.iterrows():
         if y < 40:
             c.showPage()
@@ -77,48 +83,54 @@ def get_user_plan(u_id):
         st.sidebar.error(f"Plan Error: {e}")
         return None
 
-# --- 4. AUTH ---
-def handle_auth():
+# --- 4. AUTH SYSTEM ---
+def auth_form():
     st.title("🚀 ECOM Seller Suite")
     with st.sidebar:
         mode = st.radio("Action", ["Login", "Signup"])
-        with st.form("auth_form"):
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
+        with st.form("auth"):
+            e = st.text_input("Email")
+            p = st.text_input("Password", type="password")
             submitted = st.form_submit_button("Submit")
-
             if submitted:
-                if not email or not password:
-                    st.error("Email & Password required!")
-                    return
-                try:
-                    if mode == "Login":
-                        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                    else:
-                        res = supabase.auth.sign_up({"email": email, "password": password})
+                if mode == "Signup":
+                    try:
+                        res = supabase.auth.sign_up({"email": e, "password": p})
+                        if res.get("user"):
+                            user_id = res["user"]["id"]
+                            expiry = datetime.utcnow() + timedelta(days=7)  # Trial 7 days
+                            supabase.table("users_plan").insert({
+                                "user_id": user_id,
+                                "plan_type": "trial",
+                                "expiry_date": expiry
+                            }).execute()
+                            st.success("Signup successful! Please login now.")
+                        else:
+                            st.error("Signup failed. Check email/password.")
+                    except Exception as ex:
+                        st.error(f"Signup Error: {ex}")
+                else:  # Login
+                    try:
+                        res = supabase.auth.sign_in_with_password({"email": e, "password": p})
+                        if res.user:
+                            st.session_state.user = res.user
+                            st.rerun()
+                        else:
+                            st.error("Login Failed")
+                    except Exception as ex:
+                        st.error(f"Login Error: {ex}")
 
-                    if res.get("error"):
-                        st.error(f"{mode} Failed: {res['error']['message']}")
-                    elif res.get("user"):
-                        st.session_state.user = res["user"]
-                        st.success(f"{mode} Successful!")
-                        st.experimental_rerun()
-                except Exception as err:
-                    st.error(f"{mode} Error: {err}")
-
-# --- 5. MAIN APP ---
 if st.session_state.user is None:
-    handle_auth()
+    auth_form()
 else:
     u_id = st.session_state.user.id
 
-    # --- TRIAL CHECK ---
+    # --- PLAN CHECK ---
     plan_data = get_user_plan(u_id)
     if plan_data:
-        expiry = datetime.fromisoformat(plan_data['expiry_date'].replace("Z",""))
-        now = datetime.utcnow()
-        remaining = expiry - now
-        days_left = int(remaining.total_seconds()/86400)
+        expiry = datetime.fromisoformat(plan_data['expiry_date'].replace("Z", ""))
+        remaining = expiry - datetime.utcnow()
+        days_left = int(remaining.total_seconds() / 86400)
         if days_left > 0:
             st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
             st.sidebar.info(f"Ends on: {expiry.date()}")
@@ -129,8 +141,8 @@ else:
         st.sidebar.error("No Plan Found")
         st.stop()
 
+    # --- SIDEBAR SETTINGS ---
     mapping_dict, costing_dict, master_options = load_all_data(u_id)
-
     with st.sidebar:
         st.header("📊 Product Costing")
         std_base = st.number_input("Standard Pant Cost (PT/PL)", value=165)
@@ -139,7 +151,9 @@ else:
         if st.button("Logout"):
             supabase.auth.sign_out()
             st.session_state.user = None
-            st.experimental_rerun()
+            st.rerun()
+
+# --- 5. YOUR EXISTING TABS START HERE ---
 
     t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
