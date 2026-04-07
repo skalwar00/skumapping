@@ -149,6 +149,11 @@ else:
                     df_c = pd.read_csv(f)
                     preferred = ["SELLER_SKU_CODE"]
                     sku_c = next((c for c in df_c.columns if c.upper() in map(str.upper, preferred)), None)
+                    
+                             # Step 2: fallback to other SKU columns if SELLER_SKU_CODE not found
+                    if not sku_c:
+                        fallback = ["SELLER_SKU", "SKU_CODE", "SKU"]
+                        sku_c = next((c for c in df_c.columns if c.upper() in map(str.upper, fallback)), None)
                     if sku_c:
                         for s in df_c[sku_c].dropna(): orders_data.append({'Portal_SKU': str(s).upper(), 'Qty': 1})
                 elif f.name.endswith('.pdf'):
