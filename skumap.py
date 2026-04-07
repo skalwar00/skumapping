@@ -10,15 +10,14 @@ try:
     from thefuzz import fuzz
     import pdfplumber
     from reportlab.pdfgen import canvas
-    INCH = 72 
+    INCH = 72
 except ImportError:
-    st.error("❌ Libraries are installing... Please wait.")
+    st.error("❌ Libraries missing! Install supabase, thefuzz, pdfplumber, reportlab")
     st.stop()
 
 # --- 2. CONFIG & DATABASE ---
 st.set_page_config(page_title="Aavoni Seller Suite", layout="wide", page_icon="📊")
 
-# Supabase client
 try:
     url, key = st.secrets["SUPABASE_URL"], st.secrets["SUPABASE_KEY"]
     supabase: Client = create_client(url, key)
@@ -28,7 +27,13 @@ except:
 
 if 'user' not in st.session_state: st.session_state.user = None
 
-# --- 3. SHARED UTILS ---
+# --- 3. RERUN COMPATIBLE ---
+from streamlit.runtime.scriptrunner import RerunException
+
+def rerun():
+    raise RerunException(st.script_request_queue)
+
+# --- 4. UTILS ---
 def get_design_pattern(master_sku):
     sku = str(master_sku).upper().strip()
     sku = re.sub(r'[-_](S|M|L|XL|XXL|\d*XL|FREE|SMALL|LARGE)$', '', sku)
@@ -37,11 +42,8 @@ def get_design_pattern(master_sku):
 
 @st.cache_data(ttl=300)
 def load_all_data(u_id):
-    # Mapping table
     m_res = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
-    # Master inventory
     i_res = supabase.table("master_inventory").select("master_sku").eq("user_id", u_id).execute()
-    # Costing
     c_res = supabase.table("design_costing").select("design_pattern, landed_cost").eq("user_id", u_id).execute()
 
     m_dict = {item['portal_sku'].upper(): item['master_sku'] for item in m_res.data} if m_res.data else {}
@@ -50,58 +52,91 @@ def load_all_data(u_id):
 
     return m_dict, c_dict, m_list
 
-def create_trial_plan(user_id):
-    """Insert a 7-day trial plan for new user"""
-    try:
-        expiry = datetime.utcnow() + timedelta(days=7)
-        supabase.table("users_plan").insert({"user_id": user_id, "plan_type": "trial", "expiry_date": expiry}).execute()
-        return True
-    except Exception as e:
-        st.warning(f"Trial plan not created: {e}")
-        return False
+def generate_4x6_pdf(df):
+    buffer = io.BytesIO()
+    w, h = 4 * INCH, 6 * INCH
+    c = canvas.Canvas(buffer, pagesize=(w, h))
+    c.setFont("Helvetica-Bold", 14)
+    c.drawCentredString(w/2, h - 30, "AAVONI PICKLIST")
+    c.line(20, h-40, w-20, h-40)
+    y = h - 60
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(30, y, "Master SKU")
+    c.drawString(w-60, y, "Qty")
+    y -= 15
+    c.line(20, y+10, w-20, y+10)
+    c.setFont("Helvetica", 9)
 
-# --- 4. AUTH & MAIN UI ---
+    df = df.sort_values(by="Master_SKU")
+
+    for _, row in df.iterrows():
+        if y < 40:
+            c.showPage()
+            y = h - 40
+        c.drawString(30, y, str(row['Master_SKU'])[:25])
+        c.drawString(w-55, y, str(row['Qty']))
+        y -= 15
+    c.save()
+    buffer.seek(0)
+    return buffer
+
+def get_user_plan(u_id):
+    try:
+        res = supabase.table("users_plan").select("*").eq("user_id", u_id).execute()
+        return res.data[0] if res.data else None
+    except Exception as e:
+        st.sidebar.error(f"Plan Error: {e}")
+        return None
+
+def get_final_cost(sku_name, mapping_dict, costing_dict):
+    sku = str(sku_name).strip()
+    mapped = mapping_dict.get(sku.upper(), sku)
+    pattern = get_design_pattern(mapped)
+    if pattern in costing_dict:
+        return costing_dict[pattern]
+    sku_up = sku.upper()
+    if sku_up.startswith('HF'):
+        return 230 if ('CBO' in sku_up or 'COMBO' in sku_up) else 115
+    elif sku_up.startswith('PT'):
+        return 330 if ('CBO' in sku_up or 'COMBO' in sku_up) else 165
+    return 0
+
+# --- 5. AUTH ---
 if st.session_state.user is None:
     st.title("🚀 ECOM Seller Suite")
     with st.sidebar:
         mode = st.radio("Action", ["Login", "Signup"])
-        with st.form("auth_form"):
-            email = st.text_input("Email")
-            password = st.text_input("Password", type="password")
-            submitted = st.form_submit_button("Submit")
-            if submitted:
+        with st.form("auth"):
+            e, p = st.text_input("Email"), st.text_input("Password", type="password")
+            if st.form_submit_button("Submit"):
                 try:
-                    if mode == "Login":
-                        res = supabase.auth.sign_in_with_password({"email": email, "password": password})
-                        if res.user:
-                            st.session_state.user = res.user
-                            st.success("Login Successful ✅")
-                            st.experimental_rerun()
-                        else:
-                            st.error("Login Failed")
+                    if mode=="Login":
+                        res = supabase.auth.sign_in_with_password({"email":e, "password":p})
+                        if res.user: st.session_state.user = res.user; rerun()
+                        else: st.error("Login Failed")
                     else:
-                        # Signup flow
-                        res = supabase.auth.sign_up({"email": email, "password": password})
+                        res = supabase.auth.sign_up({"email":e, "password":p})
                         if res.user:
-                            st.session_state.user = res.user
-                            plan_created = create_trial_plan(res.user.id)
-                            st.success("Signup Successful! Trial activated for 7 days ✅")
-                            st.experimental_rerun()
+                            # Add trial plan
+                            supabase.table("users_plan").insert({
+                                "user_id": res.user.id,
+                                "plan_type": "trial",
+                                "expiry_date": datetime.utcnow() + timedelta(days=7)
+                            }).execute()
+                            st.success("Signup Success! Login Now.")
                         else:
                             st.error("Signup Failed")
-                except Exception as e:
-                    st.error(f"Error: {e}")
-
+                except Exception as ex:
+                    st.error(f"Error: {ex}")
 else:
     u_id = st.session_state.user.id
-
-    # --- PLAN CHECK ---
-    plan_data = supabase.table("users_plan").select("*").eq("user_id", u_id).execute()
-    if plan_data.data:
-        expiry = plan_data.data[0]['expiry_date']
-        if isinstance(expiry, str):  # ISO string from Supabase
-            expiry = datetime.fromisoformat(expiry.replace("Z", ""))
-        days_left = max((expiry - datetime.utcnow()).days, 0)
+    # --- TRIAL CHECK ---
+    plan_data = get_user_plan(u_id)
+    if plan_data:
+        expiry = plan_data['expiry_date']
+        if isinstance(expiry, str): expiry = datetime.fromisoformat(expiry.replace("Z",""))
+        now = datetime.utcnow()
+        days_left = max(0, (expiry - now).days)
         if days_left > 0:
             st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
             st.sidebar.info(f"Ends on: {expiry.date()}")
@@ -112,24 +147,22 @@ else:
         st.sidebar.error("No Plan Found")
         st.stop()
 
-    # --- LOAD DATA ---
+    # --- LOAD MAPPING & COSTING ---
     mapping_dict, costing_dict, master_options = load_all_data(u_id)
 
-    # Sidebar
+    # --- SIDEBAR ---
     with st.sidebar:
         st.header("📊 Product Costing")
         std_base = st.number_input("Standard Pant Cost (PT/PL)", value=165)
         hf_base = st.number_input("HF Series Cost", value=110)
         st.divider()
-        if st.button("Logout"):
-            supabase.auth.sign_out()
-            st.session_state.user = None
-            st.experimental_rerun()
+        if st.button("Logout"): 
+            supabase.auth.sign_out(); st.session_state.user = None; rerun()
 
     # --- TABS ---
     t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
-    # --- TAB 1: PICKLIST + Mapping ---
+    # --- TAB 1: PICKLIST ---
     with t1:
         st.header("Order Processing & Picklist")
         with st.expander("📥 Master Inventory Sync"):
@@ -138,10 +171,8 @@ else:
                 df_m = pd.read_csv(m_f)
                 new_m = [{"user_id": u_id, "master_sku": str(s).upper()} for s in df_m.iloc[:,0].dropna().unique()]
                 supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
-                st.success("Master SKUs Synced!")
-                st.experimental_rerun()
+                st.success("Master SKUs Synced!"); rerun()
 
-        # Orders uploader
         files = st.file_uploader("Upload Orders (Flipkart CSV / Meesho PDF)", type=["csv", "pdf"], accept_multiple_files=True)
         if files:
             orders_data = []
@@ -154,37 +185,26 @@ else:
                         fallback = ["SELLER_SKU", "SKU_CODE", "SKU"]
                         sku_c = next((c for c in df_c.columns if c.upper() in map(str.upper, fallback)), None)
                     if sku_c:
-                        for s in df_c[sku_c].dropna():
-                            orders_data.append({'Portal_SKU': str(s).upper(), 'Qty': 1})
+                        for s in df_c[sku_c].dropna(): orders_data.append({'Portal_SKU': str(s).upper(), 'Qty': 1})
                 elif f.name.endswith('.pdf'):
                     with pdfplumber.open(f) as pdf:
                         for page in pdf.pages:
                             table = page.extract_table()
                             if table:
                                 for row in table[1:]:
-                                    if row and row[0]:
-                                        orders_data.append({'Portal_SKU': str(row[0]).upper(), 'Qty': 1})
+                                    if row and row[0]: orders_data.append({'Portal_SKU': str(row[0]).upper(), 'Qty': 1})
             if orders_data:
                 combined = pd.DataFrame(orders_data)
                 st.success(f"Orders Loaded: {len(combined)}")
-
-                # Generate picklist
                 if st.button("Generate 4x6 Picklist"):
                     combined['Master_SKU'] = combined['Portal_SKU'].map(mapping_dict)
                     ready = combined.dropna(subset=['Master_SKU'])
                     if not ready.empty:
                         summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index()
-                        buffer = io.BytesIO()
-                        w, h = 4 * INCH, 6 * INCH
-                        c = canvas.Canvas(buffer, pagesize=(w, h))
-                        c.setFont("Helvetica-Bold", 14)
-                        c.drawCentredString(w/2, h - 30, "AAVONI PICKLIST")
-                        c.showPage()
-                        c.save()
-                        buffer.seek(0)
-                        st.download_button("📥 Download PDF", buffer, "picklist.pdf", "application/pdf")
-
-                # Unmapped SKUs
+                        pdf = generate_4x6_pdf(summary)
+                        st.download_button("📥 Download PDF", pdf, "picklist.pdf", "application/pdf")
+                
+                st.divider()
                 unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
                 if unmapped:
                     st.subheader("🔍 New SKU Mapping")
@@ -195,17 +215,12 @@ else:
                             score = fuzz.token_set_ratio(s.upper(), opt.upper())
                             if score > hs: hs, best = score, opt
                         map_rows.append({"Confirm": (hs >= 90), "Portal SKU": s, "Master SKU": best})
-                    edited_map = st.data_editor(
-                        pd.DataFrame(map_rows),
-                        column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)},
-                        hide_index=True
-                    )
+                    edited_map = st.data_editor(pd.DataFrame(map_rows), column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)}, hide_index=True)
                     if st.button("Save Mappings"):
                         to_save = edited_map[edited_map['Confirm'] == True]
                         rows = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in to_save.iterrows()]
                         supabase.table("sku_mapping").upsert(rows, on_conflict="user_id, portal_sku").execute()
-                        st.success("Saved!")
-                        st.experimental_rerun()
+                        st.success("Saved!"); rerun()
 
 # --- TAB 2,3,4 logic can remain same as in your current script ---
 
