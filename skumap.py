@@ -96,6 +96,17 @@ def login_signup_ui():
                         res = supabase.auth.sign_in_with_password({"email": e, "password": p})
                     else:
                         res = supabase.auth.sign_up({"email": e, "password": p})
+                        # ✅ Signup ke baad default trial plan insert
+                        if res.user:
+                            from datetime import datetime, timedelta
+                            trial_plan = {
+                                "user_id": res.user.id,
+                                "plan_type": "trial",
+                                "expiry_date": (datetime.utcnow() + timedelta(days=7)).isoformat()
+                            }
+                            plan_res = supabase.table("users_plan").insert(trial_plan).execute()
+                            if plan_res.error:
+                                st.error(f"❌ Plan insert failed: {plan_res.error.message}")
 
                     if res.user:
                         st.session_state.user = res.user
