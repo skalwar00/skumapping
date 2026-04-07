@@ -1,8 +1,6 @@
 streamlit
 pandas
-supabase==2.4.0
-postgrest==0.16.0
-gotrue==2.2.0
+supabase
 thefuzz
 pdfplumber
 reportlab
