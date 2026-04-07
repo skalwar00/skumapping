@@ -84,7 +84,7 @@ def get_user_plan(u_id):
         return None
 
 # --- 4. AUTH & MAIN UI ---
-if st.session_state.user is None:
+def login_signup_ui():
     st.title("🚀 Aavoni Seller Suite")
     with st.sidebar:
         mode = st.radio("Action", ["Login", "Signup"])
@@ -92,13 +92,23 @@ if st.session_state.user is None:
             e, p = st.text_input("Email"), st.text_input("Password", type="password")
             if st.form_submit_button("Submit"):
                 try:
-                    res = (supabase.auth.sign_in_with_password if mode=="Login" else supabase.auth.sign_up)({"email":e, "password":p})
-                    if res.user: st.session_state.user = res.user; st.rerun()
-                except: st.error("Login Failed")
+                    if mode == "Login":
+                        res = supabase.auth.sign_in_with_password({"email": e, "password": p})
+                    else:
+                        res = supabase.auth.sign_up({"email": e, "password": p})
+
+                    if res.user:
+                        st.session_state.user = res.user
+                        st.experimental_rerun()
+                    else:
+                        st.error("❌ Authentication Failed")
+                except Exception as ex:
+                    st.error(f"❌ Error: {ex}")
+
+if st.session_state.user is None:
+    login_signup_ui()
 else:
     u_id = st.session_state.user.id
-
-    # --- TRIAL CHECK (MERGED) ---
     plan_data = get_user_plan(u_id)
 
     if plan_data:
@@ -114,19 +124,23 @@ else:
             st.sidebar.error("🔴 Trial Expired - Upgrade Required")
             st.stop()
     else:
-        st.sidebar.error("No Plan Found")
+        st.sidebar.error("❌ No Plan Found for this user")
         st.stop()
 
-    # --- ORIGINAL APP CONTINUES ---
+    # --- CONTINUE WITH YOUR EXISTING APP LOGIC ---
     mapping_dict, costing_dict, master_options = load_all_data(u_id)
-    
+
     with st.sidebar:
         st.header("📊 Product Costing")
         std_base = st.number_input("Standard Pant Cost (PT/PL)", value=165)
         hf_base = st.number_input("HF Series Cost", value=110)
         st.divider()
-        if st.button("Logout"): 
-            supabase.auth.sign_out(); st.session_state.user = None; st.rerun()
+        if st.button("Logout"):
+            supabase.auth.sign_out()
+            st.session_state.user = None
+            st.experimental_rerun()
+
+# --- YOUR EXISTING TABS LOGIC CONTINUES BELOW ---
 
     t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
