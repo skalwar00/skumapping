@@ -1,6 +1,6 @@
 streamlit
 pandas
-supabase==2.4.0
+supabase
 postgrest
 gotrue
 thefuzz
