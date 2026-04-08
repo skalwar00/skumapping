@@ -57,40 +57,6 @@ def check_persistent_login():
             cookie_manager.delete("sb-access-token")
     return False
 
-# --- 5. MAIN EXECUTION (LOGIN VS DASHBOARD) ---
-# Pehla check
-if not check_persistent_login():
-    # 1.2 second wait browser cookies sync ke liye
-    with st.spinner("Checking session..."):
-        time.sleep(1.2)
-        if check_persistent_login():
-            st.rerun()
-        else:
-            # Agar abhi bhi nahi mila, toh Login UI dikhao
-            st.title("🚀 Ecom Seller Suite")
-            with st.sidebar:
-                mode = st.radio("Action", ["Login", "Signup"])
-                with st.form("auth"):
-                    e = st.text_input("Email").strip()
-                    p = st.text_input("Password", type="password")
-                    if st.form_submit_button("Submit"):
-                        try:
-                            if mode == "Signup":
-                                res = supabase.auth.sign_up({"email": e, "password": p})
-                                if res.user:
-                                    expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
-                                    supabase.table("users_plan").upsert({"user_id": res.user.id, "email": e, "plan_type": "trial", "expiry_date": expiry}).execute()
-                                    st.success("Signup Done! Please switch to Login.")
-                            else:
-                                res = supabase.auth.sign_in_with_password({"email": e, "password": p})
-                                if res.user:
-                                    st.session_state.user = res.user
-                                    cookie_manager.set("sb-access-token", res.session.access_token, expires_at=datetime.now() + timedelta(days=30))
-                                    st.rerun()
-                        except Exception as ex: 
-                            st.error(f"Auth Error: {ex}")
-            st.stop() # Login form dikhne ke baad execution yahi rok do
-
 # --- 4. SHARED UTILS ---
 def get_design_pattern(master_sku):
     sku = str(master_sku).upper().strip()
