@@ -152,7 +152,7 @@ else:
 
     # --- TAB 1: PICKLIST ---
     with t1:
-        st.header("Order Processing")
+        st.header("All Portals Picklist")
         with st.expander("📥 Master Inventory Sync"):
             m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'])
             if m_f and st.button("Sync Master"):
