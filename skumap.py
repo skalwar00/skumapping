@@ -174,36 +174,30 @@ def login_signup_ui():
                 except Exception as ex: st.error(f"Auth Error: {ex}")
 
 # --- 6. MAIN EXECUTION ---
-# Step A: Pehle check karo session state ya cookies mein data hai ya nahi
+# Pehle login check karo (Persistent Login)
 if not check_persistent_login():
-    # Step B: Agar nahi mila, toh ho sakta hai browser component load ho raha ho
-    # Isliye spinner dikha kar 1.2s ka wait karenge
     with st.spinner("Verifying Session..."):
-        time.sleep(1.2) 
+        time.sleep(1.2) # Browser sync ke liye thoda wait
         
-        # Step C: Wait ke baad dubara check karein
         if check_persistent_login():
-            # Agar mil gaya, toh app ko rerun karke dashboard pe le jao
-            st.rerun()
+            st.rerun() # Login mil gaya, app restart karo
         else:
-            # Agar abhi bhi nahi mila, matlab sach mein login ki zaroorat hai
-            login_signup_ui()
-            st.stop() # Aage ka dashboard code execute hone se roko
+            login_signup_ui() # Nahi mila, login form dikhao
+            st.stop() # Aage ka code mat chalao
 
-# --- YAHAN SE AAPKA DASHBOARD START HOTA HAI ---
+# --- DASHBOARD CODE (No Else Block) ---
+# Yahan tak wahi pahuchega jo login hai
+u_id = st.session_state.user.id
+plan_data = get_user_plan(u_id)
 
-else:
-    u_id = st.session_state.user.id
-    plan_data = get_user_plan(u_id)
-
-    if plan_data:
-        expiry_val = plan_data['expiry_date']
-        expiry = datetime.fromisoformat(expiry_val.replace("Z", "+00:00")) if isinstance(expiry_val, str) else datetime.combine(expiry_val, datetime.min.time()).replace(tzinfo=timezone.utc)
-        days_left = (expiry - datetime.now(timezone.utc)).days
-        if days_left < 0:
-            st.sidebar.error("🔴 Expired"); st.stop()
-        else:
-            st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
+if plan_data:
+    expiry_val = plan_data['expiry_date']
+    expiry = datetime.fromisoformat(expiry_val.replace("Z", "+00:00")) if isinstance(expiry_val, str) else datetime.combine(expiry_val, datetime.min.time()).replace(tzinfo=timezone.utc)
+    days_left = (expiry - datetime.now(timezone.utc)).days
+    if days_left < 0:
+        st.sidebar.error("🔴 Expired"); st.stop()
+    else:
+        st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
     
     mapping_dict, costing_dict, master_options = load_all_data(u_id)
     master_set = set(master_options)
