@@ -250,28 +250,39 @@ else:
                 st.divider()
                 unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
                 if unmapped:
-                    st.subheader("🔍 Smart Mapping (Match %)")
+                    st.subheader("🔍 Smart SKU Mapping (Optimized Speed)")
                     map_rows = []
+                    
+                    # --- CHANGE: Bulk Fetch Memory (Sirf ek baar DB call) ---
+                    with st.spinner("Fetching smart patterns..."):
+                        p_mem_res = supabase.table("pattern_mapping").select("portal_base, master_base").eq("user_id", u_id).execute()
+                        # Memory ko local dictionary mein daal do (Fast searching ke liye)
+                        pattern_memory = {item['portal_base']: item['master_base'] for item in p_mem_res.data} if p_mem_res.data else {}
+
                     for s in unmapped:
                         best, hs, m_type = "Select", 0, "Fuzzy"
                         p_base = get_design_pattern(s)
-                        try:
-                            p_mem = supabase.table("pattern_mapping").select("master_base").eq("user_id", u_id).eq("portal_base", p_base).execute()
-                            if p_mem.data:
-                                m_base = p_mem.data[0]['master_base']
-                                size = get_smart_suffix(s)
-                                best, hs, m_type = (f"{m_base}-{size}" if size else m_base), 100, "Learned"
-                        except: pass
                         
+                        # --- CHANGE: Ab DB ki jagah local dictionary check hogi (Super Fast) ---
+                        if p_base in pattern_memory:
+                            m_base = pattern_memory[p_base]
+                            size = get_smart_suffix(s)
+                            best, hs, m_type = (f"{m_base}-{size}" if size else m_base), 100, "Learned"
+                        
+                        # Fuzzy match sirf tab chalega jab pattern memory mein nahi hai
                         if hs < 95:
                             for opt in master_options:
                                 score = fuzz.token_set_ratio(s.upper(), opt.upper())
-                                if score > hs: hs, best = score, opt
-                        map_rows.append({"Confirm": (hs >= 95), "Portal SKU": s, "Master SKU": best, "Match %": hs, "Mode": m_type})
-                    
-                    edited_map = st.data_editor(pd.DataFrame(map_rows), column_config={
-                        "Master SKU": st.column_config.SelectboxColumn(options=master_options),
-                        "Match %": st.column_config.ProgressColumn("Match %", format="%d%%", min_value=0, max_value=100)
+                                if score > hs: 
+                                    hs, best = score, opt
+                        
+                        map_rows.append({
+                            "Confirm": (hs >= 95), 
+                            "Portal SKU": s, 
+                            "Master SKU": best, 
+                            "Match %": hs, 
+                            "Mode": m_type
+                        })
                     }, hide_index=True)
 
                     if st.button("💾 Save & Learn"):
