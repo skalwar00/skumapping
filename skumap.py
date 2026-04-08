@@ -150,17 +150,43 @@ else:
 
     t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
-    # --- TAB 1: PICKLIST ---
+   # --- TAB 1: PICKLIST ---
     with t1:
         st.header("All Portals Picklist")
-        with st.expander("📥 Master Inventory Sync"):
-            m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'])
-            if m_f and st.button("Sync Master"):
-                df_m = pd.read_csv(m_f)
-                new_m = [{"user_id": u_id, "master_sku": str(s).upper().strip()} for s in df_m.iloc[:,0].dropna().unique()]
-                supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
-                st.cache_data.clear() # Clear cache to refresh master_options
-                st.success("Master SKUs Synced!"); st.rerun()
+        
+        # --- MASTER INVENTORY SECTION ---
+        with st.expander("📥 Master Inventory Manager"):
+            col_up, col_res = st.columns([2, 1])
+            
+            with col_up:
+                m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'], key="master_uploader")
+                if m_f and st.button("🚀 Sync & Update Master"):
+                    df_m = pd.read_csv(m_f)
+                    # Cleaning column 1
+                    skus_to_sync = df_m.iloc[:,0].dropna().unique()
+                    new_m = [{"user_id": u_id, "master_sku": str(s).upper().strip()} for s in skus_to_sync]
+                    
+                    try:
+                        supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
+                        st.cache_data.clear() # Cache clear taaki nayi list dikhe
+                        st.success(f"✅ {len(new_m)} Master SKUs Synced Successfully!")
+                        # Hum thoda wait karenge rerun se pehle taaki success message dikhe
+                        # st.rerun() -- Agar turant refresh chahiye toh use karein
+                    except Exception as e:
+                        st.error(f"Error Syncing: {e}")
+
+            with col_res:
+                st.markdown("⚠️ **Danger Zone**")
+                if st.button("🗑️ Reset Master SKU List"):
+                    # Confirmation alert setup (Optional but safe)
+                    try:
+                        # Sirf is user ka data delete hoga
+                        supabase.table("master_inventory").delete().eq("user_id", u_id).execute()
+                        st.cache_data.clear()
+                        st.warning("All Master SKUs have been cleared!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Reset Failed: {e}")
 
         files = st.file_uploader("Upload Orders", type=["csv", "pdf"], accept_multiple_files=True)
         if files:
