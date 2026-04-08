@@ -18,7 +18,11 @@ except ImportError:
 
 # --- 2. CONFIG & DATABASE ---
 st.set_page_config(page_title="Smart Ecom Suite", layout="wide", page_icon="📊")
-cookie_manager = stx.CookieManager()
+# Key 'myminimanager' add karna zaroori hai stability ke liye
+cookie_manager = stx.CookieManager(key="myminimanager") 
+
+if 'user' not in st.session_state: 
+    st.session_state.user = None
 
 if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
     st.error("❌ Supabase Secrets Missing!")
@@ -31,15 +35,24 @@ supabase: Client = create_client(url, key)
 if 'user' not in st.session_state: st.session_state.user = None
 
 # --- 3. REFRESH LOGIN CHECK (Persistent Login) ---
-if st.session_state.user is None:
-    token = cookie_manager.get(cookie="sb-access-token")
-    if token:
+def check_persistent_login():
+    # Pehle check karo session state mein user hai ya nahi
+    if st.session_state.user is not None:
+        return True
+
+    # Browser se saari cookies uthao
+    all_cookies = cookie_manager.get_all()
+    
+    if all_cookies and "sb-access-token" in all_cookies:
+        token = all_cookies["sb-access-token"]
         try:
             res = supabase.auth.get_user(token)
             if res.user:
                 st.session_state.user = res.user
-        except:
+                return True
+        except Exception:
             cookie_manager.delete("sb-access-token")
+    return False
 
 # --- 4. SHARED UTILS ---
 def get_design_pattern(master_sku):
@@ -124,18 +137,22 @@ def login_signup_ui():
                 except Exception as ex: st.error(f"Auth Error: {ex}")
 
 # --- 6. MAIN EXECUTION ---
-if st.session_state.user is None:
-    # Cookie check karne ke liye 0.6 sec ka "Silent Wait"
-    with st.spinner(""): # Khali spinner, koi text nahi
+# Pehle attempt mein login check karo
+if not check_persistent_login():
+    # Agar pehli baar mein nahi mila, toh 1.2 sec wait karo (Component loading time)
+    with st.spinner("Checking session..."):
         import time
-        time.sleep(0.6)
-    
-    # Check again
-    if st.session_state.user is None:
-        login_signup_ui()
-        st.stop() # Form dikhne ke baad execution yahi rok do
-    else:
-        st.rerun()
+        time.sleep(1.2) 
+        
+        # Dubara check karo
+        if check_persistent_login():
+            st.rerun() # Mil gaya toh app restart karo
+        else:
+            login_signup_ui() # Nahi mila toh login dikhao
+            st.stop()
+
+# --- YAHAN SE AAPKA DASHBOARD START HOTA HAI ---
+
 else:
     u_id = st.session_state.user.id
     plan_data = get_user_plan(u_id)
