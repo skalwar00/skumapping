@@ -1,144 +1,130 @@
 import streamlit as st
-import pandas as pd
-import re
-import io
 import time
-from datetime import datetime, timedelta, timezone
-import extra_streamlit_components as stx
-
-cookie_manager = stx.CookieManager()
-
-def get_cookies_safe():
-    try:
-        cookies = get_cookies_safe()
-        if cookies is None:
-            return {}
-        return cookies
-    except:
-        return {}
+from supabase import create_client, Client
+from streamlit_js_eval import streamlit_js_eval
 
 # --- CONFIG ---
 st.set_page_config(page_title="Smart Ecom Suite", layout="wide")
-
-# --- AUTH CONFIG ---
-ACCESS_KEY = "sb-access-token"
-REFRESH_KEY = "sb-refresh-token"
-
-# --- IMPORTS ---
-from supabase import create_client, Client
 
 # --- SUPABASE ---
 url = st.secrets["SUPABASE_URL"]
 key = st.secrets["SUPABASE_KEY"]
 supabase: Client = create_client(url, key)
 
-# --- SESSION ---
-if 'user' not in st.session_state:
+# --- SESSION INIT ---
+if "user" not in st.session_state:
     st.session_state.user = None
 
-# --- SAVE SESSION ---
-def save_session(session):
-    st.session_state.user = session.user
+if "access_token" not in st.session_state:
+    st.session_state.access_token = None
 
-    expiry = datetime.now(timezone.utc) + timedelta(days=7)
 
-    cookie_manager.set(
-        ACCESS_KEY,
-        session.access_token,
-        expires_at=expiry   # ✅ datetime object
+# --- LOCAL STORAGE HELPERS ---
+def save_token(token):
+    streamlit_js_eval(
+        js_expressions=f"localStorage.setItem('sb_token', '{token}')",
+        key="save_token"
     )
 
-    cookie_manager.set(
-        REFRESH_KEY,
-        session.refresh_token,
-        expires_at=expiry   # ✅ datetime object
+def load_token():
+    token = streamlit_js_eval(
+        js_expressions="localStorage.getItem('sb_token')",
+        key="load_token"
+    )
+    return token
+
+def clear_token():
+    streamlit_js_eval(
+        js_expressions="localStorage.removeItem('sb_token')",
+        key="clear_token"
     )
 
-# --- CHECK LOGIN ---
-def check_persistent_login():
-    # Already logged
-    if st.session_state.get("user"):
-        cookies = get_cookies_safe()
-        if cookies.get(ACCESS_KEY):
-            return True
 
-    # Load cookies
-    cookies = get_cookies_safe()
-    if not cookies:
-        time.sleep(1)
-        cookies = get_cookies_safe()
-
-    access_token = cookies.get(ACCESS_KEY)
-    refresh_token = cookies.get(REFRESH_KEY)
-
-    if access_token:
+# --- LOGIN CHECK ---
+def check_login():
+    # 1. session me already hai
+    if st.session_state.get("user") and st.session_state.get("access_token"):
         try:
-            res = supabase.auth.get_user(access_token)
+            res = supabase.auth.get_user(st.session_state.access_token)
             if res.user:
-                st.session_state.user = res.user
                 return True
         except:
             pass
 
-    if refresh_token:
+    # 2. localStorage se try karo
+    token = load_token()
+
+    if token:
         try:
-            new_session = supabase.auth.refresh_session(refresh_token)
-            if new_session.session:
-                save_session(new_session.session)
+            res = supabase.auth.get_user(token)
+            if res.user:
+                st.session_state.user = res.user
+                st.session_state.access_token = token
                 return True
         except:
             pass
 
     return False
 
+
 # --- LOGIN UI ---
 def login_ui():
-    st.title("Login")
+    st.title("🔐 Login")
 
     email = st.text_input("Email")
     password = st.text_input("Password", type="password")
 
     if st.button("Login"):
-        res = supabase.auth.sign_in_with_password({
-            "email": email,
-            "password": password
-        })
+        try:
+            res = supabase.auth.sign_in_with_password({
+                "email": email,
+                "password": password
+            })
 
-        if res.user:
-            save_session(res.session)
-            st.rerun()
+            if res.user:
+                token = res.session.access_token
+
+                st.session_state.user = res.user
+                st.session_state.access_token = token
+
+                save_token(token)
+
+                st.success("Login successful ✅")
+                time.sleep(0.5)
+                st.rerun()
+
+        except Exception as e:
+            st.error(f"Error: {e}")
+
 
 # --- LOGOUT ---
 def logout():
-    # Supabase logout
     try:
         supabase.auth.sign_out()
     except:
         pass
 
-    # Delete cookies (IMPORTANT)
-    cookie_manager.delete(ACCESS_KEY)
-    cookie_manager.delete(REFRESH_KEY)
-
-    # Clear full session
-    for key in list(st.session_state.keys()):
-        del st.session_state[key]
-
-    # Small delay (important for cookie clear)
-    time.sleep(0.5)
-
-    st.success("Logged out ✅")
-    time.sleep(0.5)
-
+    clear_token()
+    st.session_state.clear()
     st.rerun()
 
-# --- ENTRY ---
-if not check_persistent_login():
-    login_ui()
-    st.stop()
 
-# --- USER ---
+# --- ENTRY POINT ---
+if not check_login():
+    with st.spinner("🔐 Verifying session..."):
+        time.sleep(0.5)
+
+    if not check_login():
+        login_ui()
+        st.stop()
+
+# --- USER READY ---
 u_id = st.session_state.user.id
+
+
+# --- SIDEBAR ---
+with st.sidebar:
+    st.button("Logout", on_click=logout)
 
 # --- LOAD DATA ---
 @st.cache_data
@@ -164,10 +150,6 @@ master_set = set(master_options)
 # --- HELPERS ---
 def get_design_pattern(sku):
     return re.sub(r'[-_ ]?(S|M|L|XL|XXL)$', '', str(sku).upper())
-
-# --- SIDEBAR ---
-with st.sidebar:
-    st.button("Logout", on_click=logout)
 
 # --- MAIN UI ---
 st.title("📊 Smart Dashboard")
