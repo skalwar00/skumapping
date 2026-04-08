@@ -4,12 +4,15 @@ import re
 import io
 import time
 from datetime import datetime, timedelta, timezone
-import extra_streamlit_components as stx 
+import extra_streamlit_components as stx
 
 # --- 1. CONFIG ---
 st.set_page_config(page_title="Smart Ecom Suite", layout="wide", page_icon="📊")
 
-# --- 2. COOKIE MANAGER ---
+# --- 2. COOKIE + AUTH CONFIG ---
+ACCESS_KEY = "sb-access-token"
+REFRESH_KEY = "sb-refresh-token"
+
 if 'cookie_manager' not in st.session_state:
     st.session_state.cookie_manager = stx.CookieManager(key="aavoni_auth_manager")
 
@@ -42,28 +45,59 @@ if 'user' not in st.session_state:
 if 'session' not in st.session_state:
     st.session_state.session = None
 
-# --- 6. AUTH SYSTEM ---
+# --- 6. SAVE SESSION ---
+def save_session(session):
+    st.session_state.user = session.user
+    st.session_state.session = session
+
+    cookie_manager.set(
+        ACCESS_KEY,
+        session.access_token,
+        expires_at=(datetime.now(timezone.utc) + timedelta(days=7)).timestamp()
+    )
+
+    cookie_manager.set(
+        REFRESH_KEY,
+        session.refresh_token,
+        expires_at=(datetime.now(timezone.utc) + timedelta(days=7)).timestamp()
+    )
+
+# --- 7. CHECK LOGIN ---
 def check_persistent_login():
-    if st.session_state.user is not None:
+    if st.session_state.get("user"):
         return True
 
-    for _ in range(2):
-        token = cookie_manager.get(cookie="sb-access-token")
+    cookies = cookie_manager.get_all()
+    if not cookies:
+        time.sleep(1)
+        cookies = cookie_manager.get_all()
 
-        if token:
-            try:
-                res = supabase.auth.get_user(token)
-                if res.user:
-                    st.session_state.user = res.user
-                    return True
-            except:
-                cookie_manager.delete("sb-access-token")
+    access_token = cookies.get(ACCESS_KEY)
+    refresh_token = cookies.get(REFRESH_KEY)
 
-        time.sleep(0.5)
+    # Try access token
+    if access_token:
+        try:
+            res = supabase.auth.get_user(access_token)
+            if res.user:
+                st.session_state.user = res.user
+                return True
+        except:
+            pass
+
+    # Try refresh token
+    if refresh_token:
+        try:
+            new_session = supabase.auth.refresh_session(refresh_token)
+            if new_session.session:
+                save_session(new_session.session)
+                return True
+        except:
+            pass
 
     return False
 
-
+# --- 8. LOGIN UI ---
 def login_signup_ui():
     st.title("🚀 Ecom Seller Suite")
 
@@ -101,15 +135,7 @@ def login_signup_ui():
                         })
 
                         if res.user:
-                            st.session_state.user = res.user
-                            st.session_state.session = res.session
-
-                            cookie_manager.set(
-                                "sb-access-token",
-                                res.session.access_token,
-                                expires_at=datetime.now(timezone.utc) + timedelta(days=30)
-                            )
-
+                            save_session(res.session)
                             st.success("✅ Login Successful")
                             time.sleep(0.5)
                             st.rerun()
@@ -117,20 +143,20 @@ def login_signup_ui():
                 except Exception as ex:
                     st.error(f"❌ Auth Error: {ex}")
 
-
+# --- 9. LOGOUT ---
 def logout():
     try:
         supabase.auth.sign_out()
     except:
         pass
 
-    cookie_manager.delete("sb-access-token")
-    st.session_state.user = None
-    st.session_state.session = None
+    cookie_manager.delete(ACCESS_KEY)
+    cookie_manager.delete(REFRESH_KEY)
+
+    st.session_state.clear()
     st.rerun()
 
-
-# --- 7. MAIN ENTRY ---
+# --- 10. ENTRY POINT ---
 if not check_persistent_login():
     with st.spinner("🔐 Verifying Session..."):
         time.sleep(1)
@@ -141,98 +167,12 @@ if not check_persistent_login():
             login_signup_ui()
             st.stop()
 
-
-# --- 8. USER READY ---
+# --- 11. USER READY ---
 u_id = st.session_state.user.id
 
-
-# --- 8.1 LOAD DATA ---
-@st.cache_data(ttl=60)
-def load_user_data(u_id):
-    try:
-        map_res = supabase.table("sku_mapping").select("*").eq("user_id", u_id).execute()
-        mapping_dict = {i['portal_sku']: i['master_sku'] for i in map_res.data} if map_res.data else {}
-
-        master_res = supabase.table("master_inventory").select("master_sku").eq("user_id", u_id).execute()
-        master_list = [i['master_sku'] for i in master_res.data] if master_res.data else []
-
-        cost_res = supabase.table("design_costing").select("*").eq("user_id", u_id).execute()
-        costing_dict = {i['design_pattern']: i['landed_cost'] for i in cost_res.data} if cost_res.data else {}
-
-        return mapping_dict, costing_dict, master_list
-
-    except:
-        return {}, {}, []
-
-
-mapping_dict, costing_dict, master_options = load_user_data(u_id)
-master_set = set(master_options)
-
-
-# --- 8.2 HELPERS ---
-def get_design_pattern(sku):
-    if not sku:
-        return ""
-    return re.sub(r'[-_ ]?(S|M|L|XL|XXL|XXXL)$', '', str(sku).upper())
-
-
-def get_smart_suffix(sku):
-    match = re.search(r'(S|M|L|XL|XXL|XXXL)$', str(sku).upper())
-    return match.group(1) if match else ""
-
-
-def generate_4x6_pdf(df):
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=(4 * INCH, 6 * INCH))
-
-    y = 400
-    for _, row in df.iterrows():
-        c.drawString(20, y, f"{row['Master_SKU']} x {row['Qty']}")
-        y -= 20
-        if y < 40:
-            c.showPage()
-            y = 400
-
-    c.save()
-    buffer.seek(0)
-    return buffer
-
-
-# --- 8.3 PLAN CHECK ---
-def get_user_plan(u_id):
-    try:
-        res = supabase.table("users_plan").select("*").eq("user_id", u_id).execute()
-        return res.data[0] if res.data else None
-    except:
-        return None
-
-
-plan_data = get_user_plan(u_id)
-
-if plan_data:
-    expiry = datetime.fromisoformat(plan_data['expiry_date'].replace("Z", "+00:00"))
-    days_left = (expiry - datetime.now(timezone.utc)).days
-
-    if days_left < 0:
-        st.sidebar.error("🔴 Plan Expired")
-        st.stop()
-    else:
-        st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
-
-
-# --- 9. SIDEBAR ---
-with st.sidebar:
-    st.header("📊 Settings")
-
-    std_base = st.number_input("Std Pant Cost", value=165)
-    hf_base = st.number_input("HF Cost", value=110)
-
-    if st.button("Logout"):
-        logout()
-
-
-# ✅ MAIN UI START
+# --- 12. MAIN UI START ---
 st.title("📊 Smart Ecom Dashboard")
+
  
 t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
