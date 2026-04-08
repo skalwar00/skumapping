@@ -48,12 +48,13 @@ def save_session(session):
 
 # --- CHECK LOGIN ---
 def check_persistent_login():
+    # Already logged
     if st.session_state.get("user"):
-    # ensure cookies also exist
-    cookies = cookie_manager.get_all()
-    if cookies.get(ACCESS_KEY):
-        return True
+        cookies = cookie_manager.get_all()
+        if cookies.get(ACCESS_KEY):
+            return True
 
+    # Load cookies
     cookies = cookie_manager.get_all()
     if not cookies:
         time.sleep(1)
