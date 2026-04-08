@@ -250,32 +250,37 @@ else:
                 st.divider()
                 unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
                 if unmapped:
-                    st.subheader("🔍 Smart SKU Mapping (Fast Mode)")
+                    st.subheader("🔍 Smart SKU Mapping")
                     map_rows = []
                     
-                    # --- 1. Bulk Fetch Patterns (Speed Boost) ---
-                    with st.spinner("Fetching smart patterns..."):
-                        p_mem_res = supabase.table("pattern_mapping").select("portal_base, master_base").eq("user_id", u_id).execute()
-                        pattern_memory = {item['portal_base']: item['master_base'] for item in p_mem_res.data} if p_mem_res.data else {}
+                    # Memory Fetch (Speed Optimization)
+                    p_mem_res = supabase.table("pattern_mapping").select("portal_base, master_base").eq("user_id", u_id).execute()
+                    pattern_memory = {item['portal_base']: item['master_base'] for item in p_mem_res.data} if p_mem_res.data else {}
 
                     for s in unmapped:
                         best, hs, m_type = "Select", 0, "Fuzzy"
                         p_base = get_design_pattern(s)
                         
-                        # Memory Check (No API Call here, so it's instant)
+                        # 1. First Priority: Pattern Memory
                         if p_base in pattern_memory:
                             m_base = pattern_memory[p_base]
                             size = get_smart_suffix(s)
-                            best, hs, m_type = (f"{m_base}-{size}" if size else m_base), 100, "Learned"
+                            best = f"{m_base}-{size}" if size else m_base
+                            hs, m_type = 100, "Learned"
                         
-                        # Fuzzy Match only if not learned
-                        if hs < 95:
+                        # 2. Second Priority: Fuzzy Match (Agar learned fail ho jaye ya blank ho)
+                        if hs < 95 or best == "Select":
                             for opt in master_options:
                                 score = fuzz.token_set_ratio(s.upper(), opt.upper())
-                                if score > hs: hs, best = score, opt
+                                if score > hs:
+                                    hs, best = score, opt
+                                    m_type = "Fuzzy"
+
+                        # 3. Final Safety: Agar abhi bhi blank hai toh "Select" hi rakho
+                        if not best: best = "Select"
                         
                         map_rows.append({
-                            "Confirm": (hs >= 95), 
+                            "Confirm": (hs >= 95 and best != "Select"), 
                             "Portal SKU": s, 
                             "Master SKU": best, 
                             "Match %": hs, 
