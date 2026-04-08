@@ -250,25 +250,37 @@ else:
                 st.divider()
                 unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
                 if unmapped:
-                    st.subheader("🔍 Smart SKU Mapping")
+                    st.subheader("🔍 Smart SKU Mapping (Validated Sizes)")
                     map_rows = []
                     
-                    # Memory Fetch (Speed Optimization)
+                    # 1. Memory Fetch
                     p_mem_res = supabase.table("pattern_mapping").select("portal_base, master_base").eq("user_id", u_id).execute()
                     pattern_memory = {item['portal_base']: item['master_base'] for item in p_mem_res.data} if p_mem_res.data else {}
+
+                    # Master Options ko set bana lo fast searching ke liye
+                    master_set = set(master_options)
 
                     for s in unmapped:
                         best, hs, m_type = "Select", 0, "Fuzzy"
                         p_base = get_design_pattern(s)
                         
-                        # 1. First Priority: Pattern Memory
+                        # --- STEP A: Check Learned Pattern ---
                         if p_base in pattern_memory:
                             m_base = pattern_memory[p_base]
                             size = get_smart_suffix(s)
-                            best = f"{m_base}-{size}" if size else m_base
-                            hs, m_type = 100, "Learned"
-                        
-                        # 2. Second Priority: Fuzzy Match (Agar learned fail ho jaye ya blank ho)
+                            
+                            # Validation: Check if (Base-Size) actually exists in your inventory
+                            suggested = f"{m_base}-{size}" if size else m_base
+                            
+                            if suggested in master_set:
+                                best = suggested
+                                hs, m_type = 100, "Learned"
+                            elif m_base in master_set:
+                                # Agar Size wala match nahi mila, toh base try karo
+                                best = m_base
+                                hs, m_type = 95, "Pattern Only"
+
+                        # --- STEP B: Fuzzy Fallback (Agar Learned fail ho jaye ya inventory mein na ho) ---
                         if hs < 95 or best == "Select":
                             for opt in master_options:
                                 score = fuzz.token_set_ratio(s.upper(), opt.upper())
@@ -276,9 +288,6 @@ else:
                                     hs, best = score, opt
                                     m_type = "Fuzzy"
 
-                        # 3. Final Safety: Agar abhi bhi blank hai toh "Select" hi rakho
-                        if not best: best = "Select"
-                        
                         map_rows.append({
                             "Confirm": (hs >= 95 and best != "Select"), 
                             "Portal SKU": s, 
