@@ -49,6 +49,9 @@ def save_session(session):
 # --- CHECK LOGIN ---
 def check_persistent_login():
     if st.session_state.get("user"):
+    # ensure cookies also exist
+    cookies = cookie_manager.get_all()
+    if cookies.get(ACCESS_KEY):
         return True
 
     cookies = cookie_manager.get_all()
@@ -98,9 +101,26 @@ def login_ui():
 
 # --- LOGOUT ---
 def logout():
+    # Supabase logout
+    try:
+        supabase.auth.sign_out()
+    except:
+        pass
+
+    # Delete cookies (IMPORTANT)
     cookie_manager.delete(ACCESS_KEY)
     cookie_manager.delete(REFRESH_KEY)
-    st.session_state.clear()
+
+    # Clear full session
+    for key in list(st.session_state.keys()):
+        del st.session_state[key]
+
+    # Small delay (important for cookie clear)
+    time.sleep(0.5)
+
+    st.success("Logged out ✅")
+    time.sleep(0.5)
+
     st.rerun()
 
 # --- ENTRY ---
