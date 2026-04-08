@@ -34,16 +34,18 @@ if 'user' not in st.session_state:
 def save_session(session):
     st.session_state.user = session.user
 
+    expiry = datetime.now(timezone.utc) + timedelta(days=7)
+
     cookie_manager.set(
         ACCESS_KEY,
         session.access_token,
-        expires_at=(datetime.now(timezone.utc) + timedelta(days=7)).timestamp()
+        expires_at=expiry   # ✅ datetime object
     )
 
     cookie_manager.set(
         REFRESH_KEY,
         session.refresh_token,
-        expires_at=(datetime.now(timezone.utc) + timedelta(days=7)).timestamp()
+        expires_at=expiry   # ✅ datetime object
     )
 
 # --- CHECK LOGIN ---
