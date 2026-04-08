@@ -154,39 +154,60 @@ else:
     with t1:
         st.header("All Portals Picklist")
         
-        # --- MASTER INVENTORY SECTION ---
-        with st.expander("📥 Master Inventory Manager"):
-            col_up, col_res = st.columns([2, 1])
+        # --- MASTER INVENTORY MANAGER ---
+        with st.expander("📥 Master Inventory & Backup"):
+            m_tab1, m_tab2 = st.tabs(["Inventory Sync", "Mapping Backup"])
             
-            with col_up:
-                m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'], key="master_uploader")
-                if m_f and st.button("🚀 Sync & Update Master"):
-                    df_m = pd.read_csv(m_f)
-                    # Cleaning column 1
-                    skus_to_sync = df_m.iloc[:,0].dropna().unique()
-                    new_m = [{"user_id": u_id, "master_sku": str(s).upper().strip()} for s in skus_to_sync]
-                    
-                    try:
+            with m_tab1:
+                col_up, col_res = st.columns([2, 1])
+                with col_up:
+                    m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'], key="master_up")
+                    if m_f and st.button("🚀 Sync Master"):
+                        df_m = pd.read_csv(m_f)
+                        new_m = [{"user_id": u_id, "master_sku": str(s).upper().strip()} for s in df_m.iloc[:,0].dropna().unique()]
                         supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
-                        st.cache_data.clear() # Cache clear taaki nayi list dikhe
-                        st.success(f"✅ {len(new_m)} Master SKUs Synced Successfully!")
-                        # Hum thoda wait karenge rerun se pehle taaki success message dikhe
-                        # st.rerun() -- Agar turant refresh chahiye toh use karein
-                    except Exception as e:
-                        st.error(f"Error Syncing: {e}")
-
-            with col_res:
-                st.markdown("⚠️ **Danger Zone**")
-                if st.button("🗑️ Reset Master SKU List"):
-                    # Confirmation alert setup (Optional but safe)
-                    try:
-                        # Sirf is user ka data delete hoga
+                        st.cache_data.clear()
+                        st.success(f"✅ {len(new_m)} Master SKUs Synced!")
+                
+                with col_res:
+                    st.write("🗑️ **Reset System**")
+                    if st.button("Clear Master Inventory"):
                         supabase.table("master_inventory").delete().eq("user_id", u_id).execute()
                         st.cache_data.clear()
-                        st.warning("All Master SKUs have been cleared!")
+                        st.warning("Master Inventory Cleared!")
                         st.rerun()
-                    except Exception as e:
-                        st.error(f"Reset Failed: {e}")
+
+            with m_tab2:
+                st.subheader("💾 Mapping Backup & Restore")
+                c_down, c_up = st.columns(2)
+                
+                # --- DOWNLOAD BACKUP ---
+                with c_down:
+                    st.write("Download your current mappings as CSV")
+                    current_maps = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
+                    if current_maps.data:
+                        df_backup = pd.DataFrame(current_maps.data)
+                        csv_data = df_backup.to_csv(index=False).encode('utf-8')
+                        st.download_button("📥 Download Mapping Backup", data=csv_data, file_name="sku_mapping_backup.csv", mime='text/csv')
+                    else:
+                        st.info("No mappings found to backup.")
+
+                # --- RESTORE BACKUP ---
+                with c_up:
+                    st.write("Restore from a backup file")
+                    restore_f = st.file_uploader("Upload Mapping Backup CSV", type=['csv'], key="restore_up")
+                    if restore_f and st.button("⬆️ Restore Mappings"):
+                        df_res = pd.read_csv(restore_f)
+                        if 'portal_sku' in df_res.columns and 'master_sku' in df_res.columns:
+                            res_rows = [{"user_id": u_id, "portal_sku": str(r['portal_sku']).upper(), "master_sku": str(r['master_sku']).upper()} for _, r in df_res.iterrows()]
+                            supabase.table("sku_mapping").upsert(res_rows).execute()
+                            st.cache_data.clear()
+                            st.success(f"✅ {len(res_rows)} Mappings Restored!")
+                            st.rerun()
+                        else:
+                            st.error("Invalid File Format! Columns must be: portal_sku, master_sku")
+
+        # --- ORDERS SECTION (BAAKI KA CODE SAME) ---
 
         files = st.file_uploader("Upload Orders", type=["csv", "pdf"], accept_multiple_files=True)
         if files:
