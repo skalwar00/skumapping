@@ -8,7 +8,6 @@ import extra_streamlit_components as stx
 
 cookie_manager = stx.CookieManager()
 
-cookie_manager = st.session_state.cookie_manager
 # --- CONFIG ---
 st.set_page_config(page_title="Smart Ecom Suite", layout="wide")
 
