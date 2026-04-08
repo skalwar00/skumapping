@@ -3,6 +3,7 @@ import pandas as pd
 import re
 import io
 from datetime import datetime, timedelta, timezone
+import extra_streamlit_components as stx # Persistent login ke liye
 
 # --- 1. CRITICAL IMPORTS ---
 try:
@@ -17,31 +18,37 @@ except ImportError:
 
 # --- 2. CONFIG & DATABASE ---
 st.set_page_config(page_title="Aavoni Ecom Suite", layout="wide", page_icon="📊")
+cookie_manager = stx.CookieManager()
 
 if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
     st.error("❌ Supabase Secrets Missing!")
     st.stop()
 
-try:
-    url = st.secrets["SUPABASE_URL"].strip()
-    key = st.secrets["SUPABASE_KEY"].strip()
-    supabase: Client = create_client(url, key)
-except Exception as e:
-    st.error(f"❌ Connection Error: {e}")
-    st.stop()
+url = st.secrets["SUPABASE_URL"].strip()
+key = st.secrets["SUPABASE_KEY"].strip()
+supabase: Client = create_client(url, key)
 
 if 'user' not in st.session_state: st.session_state.user = None
 
-# --- 3. SHARED UTILS ---
+# --- 3. REFRESH LOGIN CHECK (Persistent Login) ---
+if st.session_state.user is None:
+    token = cookie_manager.get(cookie="sb-access-token")
+    if token:
+        try:
+            res = supabase.auth.get_user(token)
+            if res.user:
+                st.session_state.user = res.user
+        except:
+            cookie_manager.delete("sb-access-token")
+
+# --- 4. SHARED UTILS ---
 def get_design_pattern(master_sku):
-    """SKU se Base Design nikalna (Size hata kar)"""
     sku = str(master_sku).upper().strip()
     sku = re.sub(r'[-_](S|M|L|XL|XXL|\d*XL|FREE|SMALL|LARGE)$', '', sku)
     sku = re.sub(r'\(.*?\)', '', sku)
     return sku.strip('-_ ')
 
 def get_smart_suffix(portal_sku):
-    """Portal SKU se size nikal kar standard format mein badalna"""
     s_up = portal_sku.upper()
     for size_tag in ['XXXL', 'XXL', '3XL', '2XL', 'XL', 'L', 'M', 'S']:
         if re.search(rf'[-_\s]{size_tag}$', s_up) or s_up.endswith(size_tag):
@@ -54,11 +61,9 @@ def load_all_data(u_id):
         m_res = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
         i_res = supabase.table("master_inventory").select("master_sku").eq("user_id", u_id).execute()
         c_res = supabase.table("design_costing").select("design_pattern, landed_cost").eq("user_id", u_id).execute()
-        
         m_dict = {item['portal_sku'].upper(): item['master_sku'] for item in m_res.data} if m_res.data else {}
         c_dict = {item['design_pattern']: item['landed_cost'] for item in c_res.data} if c_res.data else {}
         m_list = sorted([str(i['master_sku']).upper() for i in i_res.data]) if i_res.data else []
-        
         return m_dict, c_dict, m_list
     except:
         return {}, {}, []
@@ -86,9 +91,7 @@ def generate_4x6_pdf(df):
     c.setFont("Helvetica", 9)
     df = df.sort_values(by="Master_SKU")
     for _, row in df.iterrows():
-        if y < 40:
-            c.showPage()
-            y = h - 40
+        if y < 40: c.showPage(); y = h - 40
         c.drawString(30, y, str(row['Master_SKU'])[:25])
         c.drawString(w-55, y, str(row['Qty']))
         y -= 15
@@ -104,28 +107,21 @@ def login_signup_ui():
             e = st.text_input("Email").strip()
             p = st.text_input("Password", type="password")
             if st.form_submit_button("Submit"):
-                if not e or len(p) < 6:
-                    st.error("Invalid input (min 6 chars)")
-                    return
                 try:
-                    creds = {"email": e, "password": p}
                     if mode == "Signup":
-                        res = supabase.auth.sign_up(creds)
+                        res = supabase.auth.sign_up({"email": e, "password": p})
                         if res.user:
                             expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
-                            supabase.table("users_plan").upsert({
-                                "user_id": res.user.id, "email": e, "plan_type": "trial", "expiry_date": expiry
-                            }).execute()
-                            st.session_state.user = res.user
-                            st.rerun()
+                            supabase.table("users_plan").upsert({"user_id": res.user.id, "email": e, "plan_type": "trial", "expiry_date": expiry}).execute()
+                            st.success("Signup Done! Please switch to Login.")
                     else:
-                        res = supabase.auth.sign_in_with_password(creds)
+                        res = supabase.auth.sign_in_with_password({"email": e, "password": p})
                         if res.user:
                             st.session_state.user = res.user
+                            # Cookie set for 30 days
+                            cookie_manager.set("sb-access-token", res.session.access_token, expires_at=datetime.now() + timedelta(days=30))
                             st.rerun()
-                        else: st.error("Login Failed")
-                except Exception as ex:
-                    st.error(f"Auth Error: {ex}")
+                except Exception as ex: st.error(f"Auth Error: {ex}")
 
 # --- 4. EXECUTION ---
 if st.session_state.user is None:
@@ -135,34 +131,16 @@ else:
     plan_data = get_user_plan(u_id)
 
     if plan_data:
-        # Timezone Safe Date Parsing
         expiry_val = plan_data['expiry_date']
-        if isinstance(expiry_val, str):
-            expiry = datetime.fromisoformat(expiry_val.replace("Z", "+00:00"))
+        expiry = datetime.fromisoformat(expiry_val.replace("Z", "+00:00")) if isinstance(expiry_val, str) else datetime.combine(expiry_val, datetime.min.time()).replace(tzinfo=timezone.utc)
+        days_left = (expiry - datetime.now(timezone.utc)).days
+        if days_left < 0:
+            st.sidebar.error("🔴 Expired"); st.stop()
         else:
-            expiry = datetime.combine(expiry_val, datetime.min.time()).replace(tzinfo=timezone.utc)
-            
-        now = datetime.now(timezone.utc)
-        days_left = (expiry - now).days
-        
-        if days_left >= 0:
-            st.sidebar.success(f"🟢 Trial Active: {max(0, days_left)} days left")
-        else:
-            st.sidebar.error("🔴 Expired")
-            if st.sidebar.button("Logout"):
-                supabase.auth.sign_out()
-                st.session_state.user = None
-                st.rerun()
-            st.stop()
-    else:
-        st.sidebar.error("❌ No Plan")
-        if st.sidebar.button("Logout"):
-            supabase.auth.sign_out()
-            st.session_state.user = None
-            st.rerun()
-        st.stop()
-
+            st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
+    
     mapping_dict, costing_dict, master_options = load_all_data(u_id)
+    master_set = set(master_options)
 
     with st.sidebar:
         st.header("📊 Settings")
@@ -170,6 +148,7 @@ else:
         hf_base = st.number_input("HF Cost", value=110)
         if st.button("Logout"):
             supabase.auth.sign_out()
+            cookie_manager.delete("sb-access-token")
             st.session_state.user = None
             st.rerun()
 
@@ -177,42 +156,20 @@ else:
 
     with t1:
         st.header("All Portals Picklist")
-        
-        # --- MASTER INVENTORY MANAGER ---
         with st.expander("📥 Master Inventory & Backup"):
             m_tab1, m_tab2 = st.tabs(["Inventory Sync", "Mapping Backup"])
             with m_tab1:
-                col_up, col_res = st.columns([2, 1])
-                with col_up:
-                    m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'], key="master_up")
-                    if m_f and st.button("🚀 Sync Master"):
-                        df_m = pd.read_csv(m_f)
-                        new_m = [{"user_id": u_id, "master_sku": str(s).upper().strip()} for s in df_m.iloc[:,0].dropna().unique()]
-                        supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
-                        st.cache_data.clear()
-                        st.success(f"✅ {len(new_m)} Master SKUs Synced!")
-                with col_res:
-                    if st.button("🗑️ Reset Master Inventory"):
-                        supabase.table("master_inventory").delete().eq("user_id", u_id).execute()
-                        st.cache_data.clear(); st.warning("Master Inventory Cleared!"); st.rerun()
-
+                m_f = st.file_uploader("Upload Master SKU CSV", type=['csv'])
+                if m_f and st.button("🚀 Sync Master"):
+                    df_m = pd.read_csv(m_f)
+                    new_m = [{"user_id": u_id, "master_sku": str(s).upper().strip()} for s in df_m.iloc[:,0].dropna().unique()]
+                    supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
+                    st.cache_data.clear(); st.success("Master Synced!"); st.rerun()
             with m_tab2:
-                c_down, c_up = st.columns(2)
-                with c_down:
-                    st.write("Download Mappings")
-                    current_maps = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
-                    if current_maps.data:
-                        df_backup = pd.DataFrame(current_maps.data)
-                        st.download_button("📥 Backup CSV", df_backup.to_csv(index=False).encode('utf-8'), "sku_mapping_backup.csv", "text/csv")
-                with c_up:
-                    restore_f = st.file_uploader("Restore Backup", type=['csv'])
-                    if restore_f and st.button("⬆️ Restore"):
-                        df_res = pd.read_csv(restore_f)
-                        res_rows = [{"user_id": u_id, "portal_sku": str(r['portal_sku']).upper(), "master_sku": str(r['master_sku']).upper()} for _, r in df_res.iterrows()]
-                        supabase.table("sku_mapping").upsert(res_rows).execute()
-                        st.cache_data.clear(); st.success("Restored!"); st.rerun()
+                current_maps = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
+                if current_maps.data:
+                    st.download_button("📥 Backup CSV", pd.DataFrame(current_maps.data).to_csv(index=False).encode('utf-8'), "sku_mapping.csv")
 
-        # --- PICKLIST & SMART MAPPING ---
         files = st.file_uploader("Upload Orders", type=["csv", "pdf"], accept_multiple_files=True)
         if files:
             orders_data = []
@@ -227,7 +184,7 @@ else:
                     with pdfplumber.open(f) as pdf:
                         for page in pdf.pages:
                             page_text = (page.extract_text() or "").upper()
-                            if "PICKLIST" in page_text and "COURIER" not in page_text:
+                            if "PICKLIST" in page_text:
                                 table = page.extract_table()
                                 if table:
                                     for row in table[1:]:
@@ -235,7 +192,7 @@ else:
                                             sku = str(row[0]).upper().strip()
                                             try: qty = int(float(str(row[-1]).strip())) if row[-1] else 1
                                             except: qty = 1
-                                            if sku: orders_data.append({'Portal_SKU': sku, 'Qty': qty})
+                                            orders_data.append({'Portal_SKU': sku, 'Qty': qty})
             
             if orders_data:
                 combined = pd.DataFrame(orders_data)
@@ -250,103 +207,48 @@ else:
                 st.divider()
                 unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
                 if unmapped:
-                    st.subheader("🔍 Smart SKU Mapping (Validated Sizes)")
-                    map_rows = []
+                    st.subheader("🔍 Smart SKU Mapping")
+                    p_res = supabase.table("pattern_mapping").select("portal_base, master_base").eq("user_id", u_id).execute()
+                    pattern_memory = {item['portal_base']: item['master_base'] for item in p_res.data} if p_res.data else {}
                     
-                    # 1. Memory Fetch
-                    p_mem_res = supabase.table("pattern_mapping").select("portal_base, master_base").eq("user_id", u_id).execute()
-                    pattern_memory = {item['portal_base']: item['master_base'] for item in p_mem_res.data} if p_mem_res.data else {}
-
-                    # Master Options ko set bana lo fast searching ke liye
-                    master_set = set(master_options)
-
+                    map_rows = []
                     for s in unmapped:
                         best, hs, m_type = "Select", 0, "Fuzzy"
                         p_base = get_design_pattern(s)
-                        
-                        # --- STEP A: Check Learned Pattern ---
                         if p_base in pattern_memory:
                             m_base = pattern_memory[p_base]
                             size = get_smart_suffix(s)
-                            
-                            # Validation: Check if (Base-Size) actually exists in your inventory
                             suggested = f"{m_base}-{size}" if size else m_base
-                            
-                            if suggested in master_set:
-                                best = suggested
-                                hs, m_type = 100, "Learned"
-                            elif m_base in master_set:
-                                # Agar Size wala match nahi mila, toh base try karo
-                                best = m_base
-                                hs, m_type = 95, "Pattern Only"
-
-                        # --- STEP B: Fuzzy Fallback (Agar Learned fail ho jaye ya inventory mein na ho) ---
-                        if hs < 92 or best == "Select":
+                            if suggested in master_set: best, hs, m_type = suggested, 100, "Learned"
+                            elif m_base in master_set: best, hs, m_type = m_base, 95, "Pattern Only"
+                        
+                        if hs < 92:
                             for opt in master_options:
                                 score = fuzz.token_set_ratio(s.upper(), opt.upper())
-                                if score > hs:
-                                    hs, best = score, opt
-                                    m_type = "Fuzzy"
-
-                        map_rows.append({
-                            "Confirm": (hs >= 92 and best != "Select"), 
-                            "Portal SKU": s, 
-                            "Master SKU": best, 
-                            "Match %": hs, 
-                            "Mode": m_type
-                        })
+                                if score > hs: hs, best = score, opt
+                        
+                        map_rows.append({"Confirm": (hs >= 92), "Portal SKU": s, "Master SKU": best, "Match %": hs, "Mode": m_type})
                     
-                    # --- 2. Corrected Data Editor Syntax ---
-                    edited_map = st.data_editor(
-                        pd.DataFrame(map_rows), 
-                        column_config={
-                            "Master SKU": st.column_config.SelectboxColumn(options=master_options, width="medium"),
-                            "Match %": st.column_config.ProgressColumn("Match %", format="%d%%", min_value=0, max_value=100),
-                            "Mode": st.column_config.TextColumn("Mode", width="small")
-                        }, 
-                        hide_index=True,
-                        key="mapping_editor"
-                    )
+                    edited_map = st.data_editor(pd.DataFrame(map_rows), column_config={
+                        "Match %": st.column_config.ProgressColumn(format="%d%%", min_value=0, max_value=100),
+                        "Master SKU": st.column_config.SelectboxColumn(options=master_options)
+                    }, hide_index=True)
 
-                    # --- 3. Save Logic ---
-                    if st.button("💾 Save & Learn Mappings"):
+                    if st.button("💾 Save & Learn"):
                         to_save = edited_map[edited_map['Confirm'] == True]
                         if not to_save.empty:
-                            # Exact Mapping Save
                             rows = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in to_save.iterrows()]
                             supabase.table("sku_mapping").upsert(rows).execute()
-                            
-                            # Pattern Memory Save
                             p_rows = []
-                            seen_patterns = set() # Duplicates rokne ke liye
-                            
+                            seen = set()
                             for _, r in to_save.iterrows():
-                                pb = get_design_pattern(r['Portal SKU'])
-                                mb = get_design_pattern(r['Master SKU'])
-                                
-                                # Sirf unique portal_base hi list mein daalein
-                                if pb not in seen_patterns:
-                                    p_rows.append({
-                                        "user_id": u_id, 
-                                        "portal_base": pb, 
-                                        "master_base": mb
-                                    })
-                                    seen_patterns.add(pb)
-                            
+                                pb, mb = get_design_pattern(r['Portal SKU']), get_design_pattern(r['Master SKU'])
+                                if pb not in seen:
+                                    p_rows.append({"user_id": u_id, "portal_base": pb, "master_base": mb})
+                                    seen.add(pb)
                             if p_rows:
-                                try:
-                                    # Safe Upsert
-                                    supabase.table("pattern_mapping").upsert(
-                                        p_rows, 
-                                        on_conflict="user_id, portal_base"
-                                    ).execute()
-                                except Exception as e:
-                                    st.warning(f"Note: Pattern memory update skipped or error: {e}")
-                            
-                            st.cache_data.clear()
-                            st.success(f"✅ {len(to_save)} Mappings Saved!")
-                            st.rerun()
-
+                                supabase.table("pattern_mapping").upsert(p_rows, on_conflict="user_id, portal_base").execute()
+                            st.cache_data.clear(); st.success("Saved!"); st.rerun()
 
     # --- TAB 2: COSTING MANAGER ---
     with t2:
