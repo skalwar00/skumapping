@@ -5,8 +5,6 @@ import io
 from datetime import datetime, timedelta, timezone
 import extra_streamlit_components as stx # Persistent login ke liye
 
-from ui import apply_ui, show_header
-
 # --- 1. CRITICAL IMPORTS ---
 try:
     from supabase import create_client, Client
