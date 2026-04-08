@@ -174,19 +174,21 @@ def login_signup_ui():
                 except Exception as ex: st.error(f"Auth Error: {ex}")
 
 # --- 6. MAIN EXECUTION ---
-# Pehle attempt mein login check karo
+# Step A: Pehle check karo session state ya cookies mein data hai ya nahi
 if not check_persistent_login():
-    # Agar pehli baar mein nahi mila, toh 1.2 sec wait karo (Component loading time)
-    with st.spinner("Checking session..."):
-        import time
+    # Step B: Agar nahi mila, toh ho sakta hai browser component load ho raha ho
+    # Isliye spinner dikha kar 1.2s ka wait karenge
+    with st.spinner("Verifying Session..."):
         time.sleep(1.2) 
         
-        # Dubara check karo
+        # Step C: Wait ke baad dubara check karein
         if check_persistent_login():
-            st.rerun() # Mil gaya toh app restart karo
+            # Agar mil gaya, toh app ko rerun karke dashboard pe le jao
+            st.rerun()
         else:
-            login_signup_ui() # Nahi mila toh login dikhao
-            st.stop()
+            # Agar abhi bhi nahi mila, matlab sach mein login ki zaroorat hai
+            login_signup_ui()
+            st.stop() # Aage ka dashboard code execute hone se roko
 
 # --- YAHAN SE AAPKA DASHBOARD START HOTA HAI ---
 
