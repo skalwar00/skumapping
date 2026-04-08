@@ -233,13 +233,7 @@ with st.sidebar:
 
 # ✅ MAIN UI START
 st.title("📊 Smart Ecom Dashboard")
-
-t1, t2, t3, t4 = st.tabs([
-    "📦 Picklist",
-    "💰 Costing Manager",
-    "📊 Flipkart Profit",
-    "👗 Myntra Profit"
-])   
+ 
 t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
 with t1:
@@ -339,7 +333,7 @@ with t1:
                             st.cache_data.clear(); st.success("Saved!"); st.rerun()
 
     # --- TAB 2: COSTING MANAGER ---
-    with t2:
+with t2:
         st.header("💰 Costing Manager")
         # Yahan hum current mapping list se unique designs nikalte hain
         all_master = list(set(mapping_dict.values()))
@@ -365,7 +359,7 @@ with t1:
     # (Note: In tabs ke andar bhi costing_dict aur mapping_dict ka hi use karein jo upar se aa rahe hain)
 
     # --- TAB 3: FLIPKART ANALYZER ---
-    with t3:
+with t3:
         st.title("📊 Flipkart P/L")
         uploaded_file = st.file_uploader("Upload Flipkart Orders Excel (.xlsx)", type=["xlsx"])
         if uploaded_file:
@@ -416,7 +410,7 @@ with t1:
 
             except Exception as e: st.error(f"Error: {e}")
 
-    with t4:
+with t4:
         st.title("👗 Myntra Smart P&L & Return Analyzer")
 
         uploaded_files = st.file_uploader(
