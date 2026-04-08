@@ -16,7 +16,7 @@ except ImportError:
     st.stop()
 
 # --- 2. CONFIG & DATABASE ---
-st.set_page_config(page_title="Aavoni Seller Suite", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Ecom Seller Suite", layout="wide", page_icon="📊")
 
 if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
     st.error("❌ Supabase Secrets Missing! Check Settings > Secrets.")
@@ -66,7 +66,7 @@ def generate_4x6_pdf(df):
     w, h = 4 * INCH, 6 * INCH
     c = canvas.Canvas(buffer, pagesize=(w, h))
     c.setFont("Helvetica-Bold", 14)
-    c.drawCentredString(w/2, h - 30, "AAVONI PICKLIST")
+    c.drawCentredString(w/2, h - 30, "ORDERS PICKLIST")
     c.line(20, h-40, w-20, h-40)
     y = h - 60
     c.setFont("Helvetica-Bold", 10)
@@ -88,7 +88,7 @@ def generate_4x6_pdf(df):
     return buffer
 
 def login_signup_ui():
-    st.title("🚀 Aavoni Seller Suite")
+    st.title("🚀 Ecom Seller Suite")
     with st.sidebar:
         mode = st.radio("Action", ["Login", "Signup"])
         with st.form("auth"):
@@ -260,7 +260,7 @@ else:
 
     # --- TAB 3: FLIPKART ANALYZER ---
     with t3:
-        st.title("📊 Aavoni Pro Business Dashboard")
+        st.title("📊 Flipkart P/L")
         uploaded_file = st.file_uploader("Upload Flipkart Orders Excel (.xlsx)", type=["xlsx"])
         if uploaded_file:
             try:
