@@ -125,20 +125,16 @@ def login_signup_ui():
 
 # --- 6. MAIN EXECUTION ---
 if st.session_state.user is None:
-    # 1. Ek khali jagah (placeholder) banayein
-    auth_area = st.empty()
-    
-    # 2. Cookie ko read hone ka thoda time dein
-    with st.spinner("🔄 Reconnecting your session..."):
+    # Cookie check karne ke liye 0.5 sec ka "Silent Wait"
+    with st.spinner(""): # Khali spinner, koi text nahi
         import time
-        time.sleep(0.6)  # 0.6 second ka delay flicker rokne ke liye kaafi hai
-        
-    # 3. Agar 0.6s baad bhi cookie nahi mili, toh login form dikhao
+        time.sleep(0.5)
+    
+    # Check again
     if st.session_state.user is None:
-        with auth_area.container():
-            login_signup_ui()
+        login_signup_ui()
+        st.stop() # Form dikhne ke baad execution yahi rok do
     else:
-        # Agar cookie mil gayi aur session update ho gaya, toh dashboard par bhejo
         st.rerun()
 else:
     u_id = st.session_state.user.id
