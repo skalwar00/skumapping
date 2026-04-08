@@ -281,7 +281,7 @@ else:
                                 hs, m_type = 95, "Pattern Only"
 
                         # --- STEP B: Fuzzy Fallback (Agar Learned fail ho jaye ya inventory mein na ho) ---
-                        if hs < 95 or best == "Select":
+                        if hs < 92 or best == "Select":
                             for opt in master_options:
                                 score = fuzz.token_set_ratio(s.upper(), opt.upper())
                                 if score > hs:
@@ -289,7 +289,7 @@ else:
                                     m_type = "Fuzzy"
 
                         map_rows.append({
-                            "Confirm": (hs >= 95 and best != "Select"), 
+                            "Confirm": (hs >= 92 and best != "Select"), 
                             "Portal SKU": s, 
                             "Master SKU": best, 
                             "Match %": hs, 
