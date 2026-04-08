@@ -125,10 +125,10 @@ def login_signup_ui():
 
 # --- 6. MAIN EXECUTION ---
 if st.session_state.user is None:
-    # Cookie check karne ke liye 0.7 sec ka "Silent Wait"
+    # Cookie check karne ke liye 0.8 sec ka "Silent Wait"
     with st.spinner(""): # Khali spinner, koi text nahi
         import time
-        time.sleep(0.7)
+        time.sleep(0.8)
     
     # Check again
     if st.session_state.user is None:
