@@ -43,20 +43,16 @@ if 'session' not in st.session_state:
     st.session_state.session = None
 
 # --- 6. AUTH SYSTEM ---
-
 def check_persistent_login():
-    # Already logged in
     if st.session_state.user is not None:
         return True
 
-    # Try cookie (retry for stability)
     for _ in range(2):
         token = cookie_manager.get(cookie="sb-access-token")
 
         if token:
             try:
                 res = supabase.auth.get_user(token)
-
                 if res.user:
                     st.session_state.user = res.user
                     return True
@@ -146,9 +142,63 @@ if not check_persistent_login():
             st.stop()
 
 
-# --- 8. USER READY (Dashboard Start) ---
+# --- 8. USER READY ---
 u_id = st.session_state.user.id
 
+
+# --- 8.1 LOAD DATA ---
+@st.cache_data(ttl=60)
+def load_user_data(u_id):
+    try:
+        map_res = supabase.table("sku_mapping").select("*").eq("user_id", u_id).execute()
+        mapping_dict = {i['portal_sku']: i['master_sku'] for i in map_res.data} if map_res.data else {}
+
+        master_res = supabase.table("master_inventory").select("master_sku").eq("user_id", u_id).execute()
+        master_list = [i['master_sku'] for i in master_res.data] if master_res.data else []
+
+        cost_res = supabase.table("design_costing").select("*").eq("user_id", u_id).execute()
+        costing_dict = {i['design_pattern']: i['landed_cost'] for i in cost_res.data} if cost_res.data else {}
+
+        return mapping_dict, costing_dict, master_list
+
+    except:
+        return {}, {}, []
+
+
+mapping_dict, costing_dict, master_options = load_user_data(u_id)
+master_set = set(master_options)
+
+
+# --- 8.2 HELPERS ---
+def get_design_pattern(sku):
+    if not sku:
+        return ""
+    return re.sub(r'[-_ ]?(S|M|L|XL|XXL|XXXL)$', '', str(sku).upper())
+
+
+def get_smart_suffix(sku):
+    match = re.search(r'(S|M|L|XL|XXL|XXXL)$', str(sku).upper())
+    return match.group(1) if match else ""
+
+
+def generate_4x6_pdf(df):
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=(4 * INCH, 6 * INCH))
+
+    y = 400
+    for _, row in df.iterrows():
+        c.drawString(20, y, f"{row['Master_SKU']} x {row['Qty']}")
+        y -= 20
+        if y < 40:
+            c.showPage()
+            y = 400
+
+    c.save()
+    buffer.seek(0)
+    return buffer
+
+
+# --- 8.3 PLAN CHECK ---
 def get_user_plan(u_id):
     try:
         res = supabase.table("users_plan").select("*").eq("user_id", u_id).execute()
@@ -160,14 +210,7 @@ def get_user_plan(u_id):
 plan_data = get_user_plan(u_id)
 
 if plan_data:
-    expiry_val = plan_data['expiry_date']
-
-    expiry = (
-        datetime.fromisoformat(expiry_val.replace("Z", "+00:00"))
-        if isinstance(expiry_val, str)
-        else datetime.combine(expiry_val, datetime.min.time()).replace(tzinfo=timezone.utc)
-    )
-
+    expiry = datetime.fromisoformat(plan_data['expiry_date'].replace("Z", "+00:00"))
     days_left = (expiry - datetime.now(timezone.utc)).days
 
     if days_left < 0:
@@ -176,7 +219,8 @@ if plan_data:
     else:
         st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
 
-# --- 9. SIDEBAR SETTINGS ---
+
+# --- 9. SIDEBAR ---
 with st.sidebar:
     st.header("📊 Settings")
 
@@ -185,7 +229,17 @@ with st.sidebar:
 
     if st.button("Logout"):
         logout()
-        
+
+
+# ✅ MAIN UI START
+st.title("📊 Smart Ecom Dashboard")
+
+t1, t2, t3, t4 = st.tabs([
+    "📦 Picklist",
+    "💰 Costing Manager",
+    "📊 Flipkart Profit",
+    "👗 Myntra Profit"
+])   
 t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
     with t1:
