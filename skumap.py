@@ -5,6 +5,8 @@ import io
 from datetime import datetime, timedelta, timezone
 import extra_streamlit_components as stx # Persistent login ke liye
 
+from ui import apply_ui, show_header
+
 # --- 1. CRITICAL IMPORTS ---
 try:
     from supabase import create_client, Client
@@ -17,8 +19,11 @@ except ImportError:
     st.stop()
 
 # --- 2. CONFIG & DATABASE ---
-st.set_page_config(page_title="Smart Ecom Suite", layout="wide", page_icon="📊")
+st.set_page_config(page_title="SmartSeller Suite", layout="wide", page_icon="🚀")
 cookie_manager = stx.CookieManager()
+
+apply_ui()       # ✅ ADD
+show_header()    # ✅ ADD
 
 if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
     st.error("❌ Supabase Secrets Missing!")
