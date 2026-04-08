@@ -22,9 +22,6 @@ except ImportError:
 st.set_page_config(page_title="SmartSeller Suite", layout="wide", page_icon="🚀")
 cookie_manager = stx.CookieManager()
 
-apply_ui()       # ✅ ADD
-show_header()    # ✅ ADD
-
 if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
     st.error("❌ Supabase Secrets Missing!")
     st.stop()
