@@ -185,8 +185,8 @@ with st.sidebar:
 
     if st.button("Logout"):
         logout()
-
-    t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
+        
+t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
     with t1:
         st.header("All Portals Picklist")
