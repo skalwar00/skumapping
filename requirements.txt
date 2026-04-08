@@ -8,3 +8,4 @@ pdfplumber
 reportlab
 openpyxl
 extra-streamlit-components
+streamlit-js-eval
