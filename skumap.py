@@ -17,7 +17,7 @@ except ImportError:
     st.stop()
 
 # --- 2. CONFIG & DATABASE ---
-st.set_page_config(page_title="SmartSeller Suite", layout="wide", page_icon="🚀")
+st.set_page_config(page_title="Smart Ecom Suite", layout="wide", page_icon="📊")
 cookie_manager = stx.CookieManager()
 
 if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
