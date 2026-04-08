@@ -190,9 +190,9 @@ mapping_dict, costing_dict, master_options = load_all_data(u_id)
 master_set = set(master_options)
 
 # --- STARTING TABS ---
-t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
+ t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
-with t1:
+ with t1:
         st.header("All Portals Picklist")
         with st.expander("📥 Master Inventory & Backup"):
             m_tab1, m_tab2 = st.tabs(["Inventory Sync", "Mapping Backup"])
@@ -289,7 +289,7 @@ with t1:
                             st.cache_data.clear(); st.success("Saved!"); st.rerun()
 
     # --- TAB 2: COSTING MANAGER ---
-with t2:
+ with t2:
         st.header("💰 Costing Manager")
         # Yahan hum current mapping list se unique designs nikalte hain
         all_master = list(set(mapping_dict.values()))
@@ -315,7 +315,7 @@ with t2:
     # (Note: In tabs ke andar bhi costing_dict aur mapping_dict ka hi use karein jo upar se aa rahe hain)
 
     # --- TAB 3: FLIPKART ANALYZER ---
-with t3:
+ with t3:
         st.title("📊 Flipkart P/L")
         uploaded_file = st.file_uploader("Upload Flipkart Orders Excel (.xlsx)", type=["xlsx"])
         if uploaded_file:
