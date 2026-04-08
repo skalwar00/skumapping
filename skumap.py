@@ -192,8 +192,6 @@ master_set = set(master_options)
 # --- STARTING TABS ---
 t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
-    t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
-
     with t1:
         st.header("All Portals Picklist")
         with st.expander("📥 Master Inventory & Backup"):
