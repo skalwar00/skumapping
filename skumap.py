@@ -2,8 +2,9 @@ import streamlit as st
 import pandas as pd
 import re
 import io
+import time
 from datetime import datetime, timedelta, timezone
-import extra_streamlit_components as stx # Persistent login ke liye
+import extra_streamlit_components as stx
 
 # --- 1. CRITICAL IMPORTS ---
 try:
@@ -18,6 +19,8 @@ except ImportError:
 
 # --- 2. CONFIG & DATABASE ---
 st.set_page_config(page_title="Smart Ecom Suite", layout="wide", page_icon="📊")
+
+# Cookie Manager Initialization
 cookie_manager = stx.CookieManager()
 
 if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
@@ -28,20 +31,85 @@ url = st.secrets["SUPABASE_URL"].strip()
 key = st.secrets["SUPABASE_KEY"].strip()
 supabase: Client = create_client(url, key)
 
-if 'user' not in st.session_state: st.session_state.user = None
+# Session State Initialization
+if 'user' not in st.session_state:
+    st.session_state.user = None
 
-# --- 3. REFRESH LOGIN CHECK (Persistent Login) ---
+# --- 3. LOGOUT LOGIC (Top Priority) ---
+# Sidebar setup for Logout
+with st.sidebar:
+    st.header("📊 Settings")
+    std_base = st.number_input("Std Pant Cost", value=165)
+    hf_base = st.number_input("HF Cost", value=110)
+    
+    if st.button("Logout", key="logout_btn"):
+        # 1. Supabase Signout
+        supabase.auth.sign_out()
+        
+        # 2. Safe Cookie Delete
+        all_cookies = cookie_manager.get_all()
+        if "sb-access-token" in all_cookies:
+            cookie_manager.delete("sb-access-token")
+        
+        # 3. Clear Session & Rerun
+        st.session_state.user = None
+        st.rerun()
+
+# --- 4. AUTHENTICATION & PERSISTENCE ---
+# Browser se cookie aane mein thoda delay hota hai, isliye token check yahan hai
+token = cookie_manager.get(cookie="sb-access-token")
+
 if st.session_state.user is None:
-    token = cookie_manager.get(cookie="sb-access-token")
     if token:
         try:
             res = supabase.auth.get_user(token)
             if res.user:
                 st.session_state.user = res.user
+                st.rerun()
         except:
-            cookie_manager.delete("sb-access-token")
+            # Agar token expire ho gaya ho toh cleanup
+            all_cookies = cookie_manager.get_all()
+            if "sb-access-token" in all_cookies:
+                cookie_manager.delete("sb-access-token")
+    else:
+        # 0.6 sec wait for cookie sync
+        time.sleep(0.6)
+        token_retry = cookie_manager.get(cookie="sb-access-token")
+        
+        if not token_retry:
+            # Login UI function inside section 5
+            pass 
+        else:
+            st.rerun()
 
-# --- 4. SHARED UTILS ---
+# --- 5. SHARED UTILS & UI FUNCTIONS ---
+def login_signup_ui():
+    st.title("🚀 Ecom Seller Suite")
+    with st.sidebar:
+        mode = st.radio("Action", ["Login", "Signup"])
+        with st.form("auth"):
+            e = st.text_input("Email").strip()
+            p = st.text_input("Password", type="password")
+            if st.form_submit_button("Submit"):
+                try:
+                    if mode == "Signup":
+                        res = supabase.auth.sign_up({"email": e, "password": p})
+                        if res.user:
+                            expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+                            supabase.table("users_plan").upsert({"user_id": res.user.id, "email": e, "plan_type": "trial", "expiry_date": expiry}).execute()
+                            st.success("Signup Done! Please switch to Login.")
+                    else:
+                        res = supabase.auth.sign_in_with_password({"email": e, "password": p})
+                        if res.user:
+                            st.session_state.user = res.user
+                            # Cookie set for 30 days
+                            cookie_manager.set("sb-access-token", res.session.access_token, 
+                                             expires_at=datetime.now() + timedelta(days=30))
+                            st.rerun()
+                except Exception as ex: 
+                    st.error(f"Auth Error: {ex}")
+
+# Data Utils (Same as your original code)
 def get_design_pattern(master_sku):
     sku = str(master_sku).upper().strip()
     sku = re.sub(r'[-_](S|M|L|XL|XXL|\d*XL|FREE|SMALL|LARGE)$', '', sku)
@@ -99,68 +167,30 @@ def generate_4x6_pdf(df):
     buffer.seek(0)
     return buffer
 
-def login_signup_ui():
-    st.title("🚀 Ecom Seller Suite")
-    with st.sidebar:
-        mode = st.radio("Action", ["Login", "Signup"])
-        with st.form("auth"):
-            e = st.text_input("Email").strip()
-            p = st.text_input("Password", type="password")
-            if st.form_submit_button("Submit"):
-                try:
-                    if mode == "Signup":
-                        res = supabase.auth.sign_up({"email": e, "password": p})
-                        if res.user:
-                            expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
-                            supabase.table("users_plan").upsert({"user_id": res.user.id, "email": e, "plan_type": "trial", "expiry_date": expiry}).execute()
-                            st.success("Signup Done! Please switch to Login.")
-                    else:
-                        res = supabase.auth.sign_in_with_password({"email": e, "password": p})
-                        if res.user:
-                            st.session_state.user = res.user
-                            # Cookie set for 30 days
-                            cookie_manager.set("sb-access-token", res.session.access_token, expires_at=datetime.now() + timedelta(days=30))
-                            st.rerun()
-                except Exception as ex: st.error(f"Auth Error: {ex}")
-
-# --- 6. MAIN EXECUTION ---
+# --- 6. MAIN ROUTING ---
 if st.session_state.user is None:
-    # Cookie check karne ke liye 0.6 sec ka "Silent Wait"
-    with st.spinner(""): # Khali spinner, koi text nahi
-        import time
-        time.sleep(0.6)
-    
-    # Check again
-    if st.session_state.user is None:
-        login_signup_ui()
-        st.stop() # Form dikhne ke baad execution yahi rok do
+    login_signup_ui()
+    st.stop()
+
+# If Logged In, Load Plan and Data
+u_id = st.session_state.user.id
+plan_data = get_user_plan(u_id)
+
+if plan_data:
+    expiry_val = plan_data['expiry_date']
+    expiry = datetime.fromisoformat(expiry_val.replace("Z", "+00:00")) if isinstance(expiry_val, str) else datetime.combine(expiry_val, datetime.min.time()).replace(tzinfo=timezone.utc)
+    days_left = (expiry - datetime.now(timezone.utc)).days
+    if days_left < 0:
+        st.sidebar.error("🔴 Expired")
+        st.stop()
     else:
-        st.rerun()
-else:
-    u_id = st.session_state.user.id
-    plan_data = get_user_plan(u_id)
+        st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
 
-    if plan_data:
-        expiry_val = plan_data['expiry_date']
-        expiry = datetime.fromisoformat(expiry_val.replace("Z", "+00:00")) if isinstance(expiry_val, str) else datetime.combine(expiry_val, datetime.min.time()).replace(tzinfo=timezone.utc)
-        days_left = (expiry - datetime.now(timezone.utc)).days
-        if days_left < 0:
-            st.sidebar.error("🔴 Expired"); st.stop()
-        else:
-            st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
-    
-    mapping_dict, costing_dict, master_options = load_all_data(u_id)
-    master_set = set(master_options)
+mapping_dict, costing_dict, master_options = load_all_data(u_id)
+master_set = set(master_options)
 
-    with st.sidebar:
-        st.header("📊 Settings")
-        std_base = st.number_input("Std Pant Cost", value=165)
-        hf_base = st.number_input("HF Cost", value=110)
-        if st.button("Logout"):
-            supabase.auth.sign_out()
-            cookie_manager.delete("sb-access-token")
-            st.session_state.user = None
-            st.rerun()
+# --- STARTING TABS ---
+t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
     t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
