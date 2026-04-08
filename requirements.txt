@@ -7,3 +7,4 @@ thefuzz
 pdfplumber
 reportlab
 openpyxl
+extra-streamlit-components
