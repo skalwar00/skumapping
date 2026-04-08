@@ -2,10 +2,20 @@ import streamlit as st
 import pandas as pd
 import re
 import io
+import time
 from datetime import datetime, timedelta, timezone
-import extra_streamlit_components as stx # Persistent login ke liye
+import extra_streamlit_components as stx 
 
-# --- 1. CRITICAL IMPORTS ---
+# --- 1. CONFIG & DATABASE (TOP PAR RAKHEIN) ---
+st.set_page_config(page_title="Smart Ecom Suite", layout="wide", page_icon="📊")
+
+# Cookie manager ko sirf ek baar initialize karein
+if 'cookie_manager' not in st.session_state:
+    st.session_state.cookie_manager = stx.CookieManager(key="aavoni_auth_manager")
+
+cookie_manager = st.session_state.cookie_manager
+
+# --- 2. CRITICAL IMPORTS ---
 try:
     from supabase import create_client, Client
     from thefuzz import fuzz
@@ -16,14 +26,7 @@ except ImportError:
     st.error("❌ Libraries are installing... Please wait.")
     st.stop()
 
-# --- 2. CONFIG & DATABASE ---
-st.set_page_config(page_title="Smart Ecom Suite", layout="wide", page_icon="📊")
-# Key 'myminimanager' add karna zaroori hai stability ke liye
-cookie_manager = stx.CookieManager(key="myminimanager") 
-
-if 'user' not in st.session_state: 
-    st.session_state.user = None
-
+# --- 3. SUPABASE SETUP ---
 if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
     st.error("❌ Supabase Secrets Missing!")
     st.stop()
@@ -32,27 +35,61 @@ url = st.secrets["SUPABASE_URL"].strip()
 key = st.secrets["SUPABASE_KEY"].strip()
 supabase: Client = create_client(url, key)
 
-if 'user' not in st.session_state: st.session_state.user = None
+if 'user' not in st.session_state: 
+    st.session_state.user = None
 
-# --- 3. REFRESH LOGIN CHECK (Persistent Login) ---
+# --- 4. AUTH LOGIC (DUPLICATE ERROR FIX) ---
 def check_persistent_login():
-    # Pehle check karo session state mein user hai ya nahi
+    """Sirf session aur cookies check karta hai, naya element create nahi karta"""
     if st.session_state.user is not None:
         return True
 
-    # Browser se saari cookies uthao
-    all_cookies = cookie_manager.get_all()
+    # Cookies fetch karein
+    token = cookie_manager.get(cookie="sb-access-token")
     
-    if all_cookies and "sb-access-token" in all_cookies:
-        token = all_cookies["sb-access-token"]
+    if token:
         try:
             res = supabase.auth.get_user(token)
             if res.user:
                 st.session_state.user = res.user
                 return True
-        except Exception:
+        except:
             cookie_manager.delete("sb-access-token")
     return False
+
+# --- 5. MAIN EXECUTION (LOGIN VS DASHBOARD) ---
+# Pehla check
+if not check_persistent_login():
+    # 1.2 second wait browser cookies sync ke liye
+    with st.spinner("Checking session..."):
+        time.sleep(1.2)
+        if check_persistent_login():
+            st.rerun()
+        else:
+            # Agar abhi bhi nahi mila, toh Login UI dikhao
+            st.title("🚀 Ecom Seller Suite")
+            with st.sidebar:
+                mode = st.radio("Action", ["Login", "Signup"])
+                with st.form("auth"):
+                    e = st.text_input("Email").strip()
+                    p = st.text_input("Password", type="password")
+                    if st.form_submit_button("Submit"):
+                        try:
+                            if mode == "Signup":
+                                res = supabase.auth.sign_up({"email": e, "password": p})
+                                if res.user:
+                                    expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+                                    supabase.table("users_plan").upsert({"user_id": res.user.id, "email": e, "plan_type": "trial", "expiry_date": expiry}).execute()
+                                    st.success("Signup Done! Please switch to Login.")
+                            else:
+                                res = supabase.auth.sign_in_with_password({"email": e, "password": p})
+                                if res.user:
+                                    st.session_state.user = res.user
+                                    cookie_manager.set("sb-access-token", res.session.access_token, expires_at=datetime.now() + timedelta(days=30))
+                                    st.rerun()
+                        except Exception as ex: 
+                            st.error(f"Auth Error: {ex}")
+            st.stop() # Login form dikhne ke baad execution yahi rok do
 
 # --- 4. SHARED UTILS ---
 def get_design_pattern(master_sku):
