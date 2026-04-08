@@ -17,7 +17,7 @@ except ImportError:
     st.stop()
 
 # --- 2. CONFIG & DATABASE ---
-st.set_page_config(page_title="Aavoni Ecom Suite", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Smart Ecom Suite", layout="wide", page_icon="📊")
 cookie_manager = stx.CookieManager()
 
 if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
@@ -125,10 +125,10 @@ def login_signup_ui():
 
 # --- 6. MAIN EXECUTION ---
 if st.session_state.user is None:
-    # Cookie check karne ke liye 0.8 sec ka "Silent Wait"
+    # Cookie check karne ke liye 0.6 sec ka "Silent Wait"
     with st.spinner(""): # Khali spinner, koi text nahi
         import time
-        time.sleep(0.8)
+        time.sleep(0.6)
     
     # Check again
     if st.session_state.user is None:
