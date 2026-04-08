@@ -175,10 +175,31 @@ else:
                 elif f.name.endswith('.pdf'):
                     with pdfplumber.open(f) as pdf:
                         for page in pdf.pages:
-                            table = page.extract_table()
-                            if table:
-                                for row in table[1:]:
-                                    if row and row[0]: orders_data.append({'Portal_SKU': str(row[0]).upper(), 'Qty': 1})
+                            # Page text filter: "PICKLIST" hona chahiye aur "COURIER" nahi
+                            page_text = (page.extract_text() or "").upper()
+                            
+                            if "PICKLIST" in page_text and "COURIER" not in page_text:
+                                table = page.extract_table()
+                                if table:
+                                    # table[0] header hota hai, table[1:] se data shuru hota hai
+                                    for row in table[1:]:
+                                        # Row khali na ho aur usme data ho
+                                        if row and len(row) >= 2:
+                                            sku = str(row[0]).upper().strip()
+                                            
+                                            # Aakhri column se Quantity uthayenge (row[-1])
+                                            qty_raw = row[-1]
+                                            try:
+                                                # Text ko number mein badalna, agar fail ho to 1 maanna
+                                                qty = int(float(str(qty_raw).strip())) if qty_raw else 1
+                                            except:
+                                                qty = 1
+                                            
+                                            if sku:
+                                                orders_data.append({
+                                                    'Portal_SKU': sku, 
+                                                    'Qty': qty
+                                                })
             
             if orders_data:
                 combined = pd.DataFrame(orders_data)
