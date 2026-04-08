@@ -6,9 +6,7 @@ import time
 from datetime import datetime, timedelta, timezone
 import extra_streamlit_components as stx
 
-# ✅ YAHAN DALNA HAI (TOP PE SIRF EK BAAR)
-if "cookie_manager" not in st.session_state:
-    st.session_state.cookie_manager = stx.CookieManager(key="main_cookie_manager")
+cookie_manager = stx.CookieManager()
 
 cookie_manager = st.session_state.cookie_manager
 # --- CONFIG ---
@@ -52,15 +50,15 @@ def save_session(session):
 def check_persistent_login():
     # Already logged
     if st.session_state.get("user"):
-        cookies = cookie_manager.get_all()
+        cookies = get_cookies_safe()
         if cookies.get(ACCESS_KEY):
             return True
 
     # Load cookies
-    cookies = cookie_manager.get_all()
+    cookies = get_cookies_safe()
     if not cookies:
         time.sleep(1)
-        cookies = cookie_manager.get_all()
+        cookies = get_cookies_safe()
 
     access_token = cookies.get(ACCESS_KEY)
     refresh_token = cookies.get(REFRESH_KEY)
