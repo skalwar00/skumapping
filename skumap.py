@@ -16,10 +16,10 @@ except ImportError:
     st.stop()
 
 # --- 2. CONFIG & DATABASE ---
-st.set_page_config(page_title="Ecom Seller Suite", layout="wide", page_icon="📊")
+st.set_page_config(page_title="Aavoni Ecom Suite", layout="wide", page_icon="📊")
 
 if "SUPABASE_URL" not in st.secrets or "SUPABASE_KEY" not in st.secrets:
-    st.error("❌ Supabase Secrets Missing! Check Settings > Secrets.")
+    st.error("❌ Supabase Secrets Missing!")
     st.stop()
 
 try:
@@ -34,10 +34,19 @@ if 'user' not in st.session_state: st.session_state.user = None
 
 # --- 3. SHARED UTILS ---
 def get_design_pattern(master_sku):
+    """SKU se Base Design nikalna (Size hata kar)"""
     sku = str(master_sku).upper().strip()
     sku = re.sub(r'[-_](S|M|L|XL|XXL|\d*XL|FREE|SMALL|LARGE)$', '', sku)
     sku = re.sub(r'\(.*?\)', '', sku)
     return sku.strip('-_ ')
+
+def get_smart_suffix(portal_sku):
+    """Portal SKU se size nikal kar standard format mein badalna"""
+    s_up = portal_sku.upper()
+    for size_tag in ['XXXL', 'XXL', '3XL', '2XL', 'XL', 'L', 'M', 'S']:
+        if re.search(rf'[-_\s]{size_tag}$', s_up) or s_up.endswith(size_tag):
+            return size_tag
+    return ""
 
 @st.cache_data(ttl=300)
 def load_all_data(u_id):
@@ -104,7 +113,9 @@ def login_signup_ui():
                         res = supabase.auth.sign_up(creds)
                         if res.user:
                             expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
-                            supabase.table("users_plan").upsert({"user_id": res.user.id, "plan_type": "trial", "expiry_date": expiry}).execute()
+                            supabase.table("users_plan").upsert({
+                                "user_id": res.user.id, "email": e, "plan_type": "trial", "expiry_date": expiry
+                            }).execute()
                             st.session_state.user = res.user
                             st.rerun()
                     else:
@@ -124,19 +135,33 @@ else:
     plan_data = get_user_plan(u_id)
 
     if plan_data:
-        expiry = datetime.fromisoformat(plan_data['expiry_date'].replace("Z", "+00:00"))
+        # Timezone Safe Date Parsing
+        expiry_val = plan_data['expiry_date']
+        if isinstance(expiry_val, str):
+            expiry = datetime.fromisoformat(expiry_val.replace("Z", "+00:00"))
+        else:
+            expiry = datetime.combine(expiry_val, datetime.min.time()).replace(tzinfo=timezone.utc)
+            
         now = datetime.now(timezone.utc)
         days_left = (expiry - now).days
+        
         if days_left >= 0:
-            st.sidebar.success(f"🟢 Trial Active: {days_left} days left")
+            st.sidebar.success(f"🟢 Trial Active: {max(0, days_left)} days left")
         else:
             st.sidebar.error("🔴 Expired")
+            if st.sidebar.button("Logout"):
+                supabase.auth.sign_out()
+                st.session_state.user = None
+                st.rerun()
             st.stop()
     else:
         st.sidebar.error("❌ No Plan")
+        if st.sidebar.button("Logout"):
+            supabase.auth.sign_out()
+            st.session_state.user = None
+            st.rerun()
         st.stop()
 
-    # Load Data
     mapping_dict, costing_dict, master_options = load_all_data(u_id)
 
     with st.sidebar:
@@ -150,14 +175,12 @@ else:
 
     t1, t2, t3, t4 = st.tabs(["📦 Picklist", "💰 Costing Manager", "📊 Flipkart Profit", "👗 Myntra Profit"])
 
-   # --- TAB 1: PICKLIST ---
     with t1:
         st.header("All Portals Picklist")
         
         # --- MASTER INVENTORY MANAGER ---
         with st.expander("📥 Master Inventory & Backup"):
             m_tab1, m_tab2 = st.tabs(["Inventory Sync", "Mapping Backup"])
-            
             with m_tab1:
                 col_up, col_res = st.columns([2, 1])
                 with col_up:
@@ -168,47 +191,28 @@ else:
                         supabase.table("master_inventory").upsert(new_m, on_conflict="user_id, master_sku").execute()
                         st.cache_data.clear()
                         st.success(f"✅ {len(new_m)} Master SKUs Synced!")
-                
                 with col_res:
-                    st.write("🗑️ **Reset System**")
-                    if st.button("Clear Master Inventory"):
+                    if st.button("🗑️ Reset Master Inventory"):
                         supabase.table("master_inventory").delete().eq("user_id", u_id).execute()
-                        st.cache_data.clear()
-                        st.warning("Master Inventory Cleared!")
-                        st.rerun()
+                        st.cache_data.clear(); st.warning("Master Inventory Cleared!"); st.rerun()
 
             with m_tab2:
-                st.subheader("💾 Mapping Backup & Restore")
                 c_down, c_up = st.columns(2)
-                
-                # --- DOWNLOAD BACKUP ---
                 with c_down:
-                    st.write("Download your current mappings as CSV")
+                    st.write("Download Mappings")
                     current_maps = supabase.table("sku_mapping").select("portal_sku, master_sku").eq("user_id", u_id).execute()
                     if current_maps.data:
                         df_backup = pd.DataFrame(current_maps.data)
-                        csv_data = df_backup.to_csv(index=False).encode('utf-8')
-                        st.download_button("📥 Download Mapping Backup", data=csv_data, file_name="sku_mapping_backup.csv", mime='text/csv')
-                    else:
-                        st.info("No mappings found to backup.")
-
-                # --- RESTORE BACKUP ---
+                        st.download_button("📥 Backup CSV", df_backup.to_csv(index=False).encode('utf-8'), "sku_mapping_backup.csv", "text/csv")
                 with c_up:
-                    st.write("Restore from a backup file")
-                    restore_f = st.file_uploader("Upload Mapping Backup CSV", type=['csv'], key="restore_up")
-                    if restore_f and st.button("⬆️ Restore Mappings"):
+                    restore_f = st.file_uploader("Restore Backup", type=['csv'])
+                    if restore_f and st.button("⬆️ Restore"):
                         df_res = pd.read_csv(restore_f)
-                        if 'portal_sku' in df_res.columns and 'master_sku' in df_res.columns:
-                            res_rows = [{"user_id": u_id, "portal_sku": str(r['portal_sku']).upper(), "master_sku": str(r['master_sku']).upper()} for _, r in df_res.iterrows()]
-                            supabase.table("sku_mapping").upsert(res_rows).execute()
-                            st.cache_data.clear()
-                            st.success(f"✅ {len(res_rows)} Mappings Restored!")
-                            st.rerun()
-                        else:
-                            st.error("Invalid File Format! Columns must be: portal_sku, master_sku")
+                        res_rows = [{"user_id": u_id, "portal_sku": str(r['portal_sku']).upper(), "master_sku": str(r['master_sku']).upper()} for _, r in df_res.iterrows()]
+                        supabase.table("sku_mapping").upsert(res_rows).execute()
+                        st.cache_data.clear(); st.success("Restored!"); st.rerun()
 
-        # --- ORDERS SECTION (BAAKI KA CODE SAME) ---
-
+        # --- PICKLIST & SMART MAPPING ---
         files = st.file_uploader("Upload Orders", type=["csv", "pdf"], accept_multiple_files=True)
         if files:
             orders_data = []
@@ -222,31 +226,16 @@ else:
                 elif f.name.endswith('.pdf'):
                     with pdfplumber.open(f) as pdf:
                         for page in pdf.pages:
-                            # Page text filter: "PICKLIST" hona chahiye aur "COURIER" nahi
                             page_text = (page.extract_text() or "").upper()
-                            
                             if "PICKLIST" in page_text and "COURIER" not in page_text:
                                 table = page.extract_table()
                                 if table:
-                                    # table[0] header hota hai, table[1:] se data shuru hota hai
                                     for row in table[1:]:
-                                        # Row khali na ho aur usme data ho
                                         if row and len(row) >= 2:
                                             sku = str(row[0]).upper().strip()
-                                            
-                                            # Aakhri column se Quantity uthayenge (row[-1])
-                                            qty_raw = row[-1]
-                                            try:
-                                                # Text ko number mein badalna, agar fail ho to 1 maanna
-                                                qty = int(float(str(qty_raw).strip())) if qty_raw else 1
-                                            except:
-                                                qty = 1
-                                            
-                                            if sku:
-                                                orders_data.append({
-                                                    'Portal_SKU': sku, 
-                                                    'Qty': qty
-                                                })
+                                            try: qty = int(float(str(row[-1]).strip())) if row[-1] else 1
+                                            except: qty = 1
+                                            if sku: orders_data.append({'Portal_SKU': sku, 'Qty': qty})
             
             if orders_data:
                 combined = pd.DataFrame(orders_data)
@@ -256,28 +245,44 @@ else:
                     ready = combined.dropna(subset=['Master_SKU'])
                     if not ready.empty:
                         summary = ready.groupby('Master_SKU')['Qty'].sum().reset_index()
-                        pdf = generate_4x6_pdf(summary)
-                        st.download_button("📥 Download Picklist", pdf, "picklist.pdf")
-                
+                        st.download_button("📥 Download Picklist", generate_4x6_pdf(summary), "picklist.pdf")
+
                 st.divider()
                 unmapped = [s for s in combined['Portal_SKU'].unique() if s not in mapping_dict]
                 if unmapped:
-                    st.subheader("🔍 New SKU Mapping")
+                    st.subheader("🔍 Smart Mapping (Match %)")
                     map_rows = []
                     for s in unmapped:
-                        best, hs = "Select", 0
-                        for opt in master_options:
-                            score = fuzz.token_set_ratio(s.upper(), opt.upper())
-                            if score > hs: hs, best = score, opt
-                        map_rows.append({"Confirm": (hs >= 90), "Portal SKU": s, "Master SKU": best})
+                        best, hs, m_type = "Select", 0, "Fuzzy"
+                        p_base = get_design_pattern(s)
+                        try:
+                            p_mem = supabase.table("pattern_mapping").select("master_base").eq("user_id", u_id).eq("portal_base", p_base).execute()
+                            if p_mem.data:
+                                m_base = p_mem.data[0]['master_base']
+                                size = get_smart_suffix(s)
+                                best, hs, m_type = (f"{m_base}-{size}" if size else m_base), 100, "Learned"
+                        except: pass
+                        
+                        if hs < 95:
+                            for opt in master_options:
+                                score = fuzz.token_set_ratio(s.upper(), opt.upper())
+                                if score > hs: hs, best = score, opt
+                        map_rows.append({"Confirm": (hs >= 95), "Portal SKU": s, "Master SKU": best, "Match %": hs, "Mode": m_type})
                     
-                    edited_map = st.data_editor(pd.DataFrame(map_rows), column_config={"Master SKU": st.column_config.SelectboxColumn(options=master_options)}, hide_index=True)
-                    if st.button("Save Mappings"):
+                    edited_map = st.data_editor(pd.DataFrame(map_rows), column_config={
+                        "Master SKU": st.column_config.SelectboxColumn(options=master_options),
+                        "Match %": st.column_config.ProgressColumn("Match %", format="%d%%", min_value=0, max_value=100)
+                    }, hide_index=True)
+
+                    if st.button("💾 Save & Learn"):
                         to_save = edited_map[edited_map['Confirm'] == True]
-                        rows = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in to_save.iterrows()]
-                        supabase.table("sku_mapping").upsert(rows).execute()
-                        st.cache_data.clear()
-                        st.success("Saved!"); st.rerun()
+                        if not to_save.empty:
+                            rows = [{"user_id": u_id, "portal_sku": r['Portal SKU'], "master_sku": r['Master SKU']} for _, r in to_save.iterrows()]
+                            supabase.table("sku_mapping").upsert(rows).execute()
+                            p_rows = [{"user_id": u_id, "portal_base": get_design_pattern(r['Portal SKU']), "master_base": get_design_pattern(r['Master SKU'])} for _, r in to_save.iterrows()]
+                            supabase.table("pattern_mapping").upsert(p_rows, on_conflict="user_id, portal_base").execute()
+                            st.cache_data.clear(); st.success("Saved!"); st.rerun()
+
 
     # --- TAB 2: COSTING MANAGER ---
     with t2:
