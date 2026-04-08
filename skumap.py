@@ -6,17 +6,17 @@ import time
 from datetime import datetime, timedelta, timezone
 import extra_streamlit_components as stx
 
+# ✅ YAHAN DALNA HAI (TOP PE SIRF EK BAAR)
+if "cookie_manager" not in st.session_state:
+    st.session_state.cookie_manager = stx.CookieManager(key="main_cookie_manager")
+
+cookie_manager = st.session_state.cookie_manager
 # --- CONFIG ---
 st.set_page_config(page_title="Smart Ecom Suite", layout="wide")
 
 # --- AUTH CONFIG ---
 ACCESS_KEY = "sb-access-token"
 REFRESH_KEY = "sb-refresh-token"
-
-if 'cookie_manager' not in st.session_state:
-    st.session_state.cookie_manager = stx.CookieManager(key="auth")
-
-cookie_manager = st.session_state.cookie_manager
 
 # --- IMPORTS ---
 from supabase import create_client, Client
