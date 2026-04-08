@@ -304,13 +304,30 @@ else:
                             
                             # Pattern Memory Save
                             p_rows = []
+                            seen_patterns = set() # Duplicates rokne ke liye
+                            
                             for _, r in to_save.iterrows():
                                 pb = get_design_pattern(r['Portal SKU'])
                                 mb = get_design_pattern(r['Master SKU'])
-                                p_rows.append({"user_id": u_id, "portal_base": pb, "master_base": mb})
+                                
+                                # Sirf unique portal_base hi list mein daalein
+                                if pb not in seen_patterns:
+                                    p_rows.append({
+                                        "user_id": u_id, 
+                                        "portal_base": pb, 
+                                        "master_base": mb
+                                    })
+                                    seen_patterns.add(pb)
                             
                             if p_rows:
-                                supabase.table("pattern_mapping").upsert(p_rows, on_conflict="user_id, portal_base").execute()
+                                try:
+                                    # Safe Upsert
+                                    supabase.table("pattern_mapping").upsert(
+                                        p_rows, 
+                                        on_conflict="user_id, portal_base"
+                                    ).execute()
+                                except Exception as e:
+                                    st.warning(f"Note: Pattern memory update skipped or error: {e}")
                             
                             st.cache_data.clear()
                             st.success(f"✅ {len(to_save)} Mappings Saved!")
